@@ -28,6 +28,8 @@ Betting rules:
   Side pots by contribution layers; split pots share equally and odd chips go one each to the winners closest to
   the left of the button.
 - Optional antes (third element of a schedule level) are dead money: they count in the pot, not toward calls.
+  Antes that no live player can match (a folded player's ante above every contender's total) go back to their
+  owner like an uncalled bet (refund event at the end of the hand).
 
 Dealing is position-based so PAIRED comparisons line up: in hand h, seat i gets deck[2i], deck[2i+1] and the board is
 deck[2n .. 2n+4], where the deck for hand h depends only on the table seed and h (never on bot actions). Bots never
@@ -754,6 +756,22 @@ class Table:
                               "amount": r})
             if n_in == 1:
                 break
+
+        # Money no live player can match (a folded player's antes above every contender's total) goes back to its
+        # owner, like an uncalled bet. Without this a showdown layer had no eligible player and the engine raised
+        # EngineError (audit fix 2026-11-03; reachable only with antes: blind excess is already refunded above).
+        live_max = 0
+        for i in order:
+            if not folded[i] and contrib[i] > live_max:
+                live_max = contrib[i]
+        for j in order:
+            if contrib[j] > live_max:
+                r = contrib[j] - live_max
+                stacks[j] += r
+                contrib[j] -= r
+                pot -= r
+                if emitting:
+                    emit({"type": "refund", "hand_no": hand_no, "street": STREETS[street], "seat": j, "amount": r})
 
         # award
         won = [0] * n

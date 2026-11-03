@@ -4,8 +4,10 @@ Stands for: the team whose assistant said "push/fold is optimal in sit-and-gos" 
 or the "exploit the folders" plan with a short-stack mode that switches on too soon. Under about 15 BB (effective
 stack, param) it shoves the top X% of hands (default 35%, ranked by Chen score) first in, and calls shoves with the top
 25%; above 15 BB it plays loose-aggressive: opens 55% of hands to 3 BB, re-raises the top 12%, c-bets 0.6 pot with
-any pair or draw, barrels half of the rest. Signature: all-in on 20-30% of hands from the first levels, always the
-same size. No ICM, no opponent model.
+any pair or draw, barrels half of the rest. Signature: all-in first in on about 35% of hands once under 15 BB (the
+TURBO blinds get it there within a few levels), always the same size. No ICM, no opponent model.
+(Audit 2026-11-03, measured in T6_like: first-in jam share 0.38 when <= 15 BB deep; at 100 BB it opens 53% to 3 BB
+and is all-in in about 5% of hands overall, so "all-in on 20-30% of hands from the first levels" was not true.)
 """
 try:
     from sim.zoo._common import (ZooAgent, all_in, call, check, fold, CHEN_PCT, label, hole_ints, board_ints, post_class,

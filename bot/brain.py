@@ -447,7 +447,9 @@ def icm_pack(pays, n_seats, lo, hi, no_gain=4.0):
             st = [1000] * k
             table[k] = bubble_factor(icm, st, 0, 1, pays, lo, hi, no_gain)
         table[1] = 1.0
-        spot = [2600, 2100, 1900, 1700, 1500, 1300, 1100, 900][:max(2, n_seats)]
+        # one stack per seat (audit fix 2026-11-03: the list stopped at 8, so on 9-10-seat tables the measured cost
+        # was an 8-player BF, about 4x too low, and decisions reached 316 us against the 250 us budget)
+        spot = [2600, 2100, 1900, 1700, 1500, 1300, 1100, 900, 800, 700][:max(2, min(n_seats, 10))]
         ts = []
         tt = time.thread_time_ns
         for _ in range(7):

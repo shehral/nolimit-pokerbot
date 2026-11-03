@@ -88,7 +88,9 @@ stacks). Nobody sees another seat's cards before showdown. Agents that keep the 
 - Heads-up: the button posts the small blind, acts first preflop and last postflop. Moving button (next seat with
   chips), no dead-button rule.
 - Uncalled bets come back at the end of each betting round; side pots by contribution layers; split pots share
-  equally, odd chips one each to the winners nearest the left of the button. Optional antes (dead money).
+  equally, odd chips one each to the winners nearest the left of the button. Optional antes (dead money). A folded player's
+  antes that no live player can match (every contender all-in for less) go back to it like an uncalled bet
+  (audit fix 2026-11-03; before, such a hand raised EngineError).
 - Dealing is by position: in hand h seat i gets `deck[2i], deck[2i+1]`, the board is `deck[2n..2n+4]`, and the deck
   of hand h depends only on the table seed and h. So PAIRED runs give each seat the same cards hand by hand even after
   play diverges. Bots never see the deck generator.
