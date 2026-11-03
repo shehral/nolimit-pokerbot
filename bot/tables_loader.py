@@ -100,7 +100,13 @@ def _spec_for(T, S):
     f = guess.get((n, total))
     if f is None:
         raise ValueError(f"no SPEC_PARAMS and no known class space for {n} classes / {total} combos")
-    return f(), f"inferred from {n} classes"
+    spec = f()
+    import re
+    m = re.search(r"ante ([0-9.]+) bb", T.__doc__ or "")       # older modules: the spec summary in the docstring
+    if m and float(m.group(1)) > 0:
+        import dataclasses
+        spec = dataclasses.replace(spec, ante_bb=float(m.group(1)))
+    return spec, f"inferred from {n} classes"
 
 
 class Active:

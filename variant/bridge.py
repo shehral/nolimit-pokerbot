@@ -32,6 +32,9 @@ def gate_tables(T, max_stderr=MAX_STDERR_A, require_final=False):
         reasons.append(f"stderr a {se:.4f} > {max_stderr} (build longer: 300-900 s for 3-card or rollout games)")
     if require_final and not meta.get("final"):
         reasons.append("checkpoint, not the final write")
+    src = str((getattr(T, "SOURCES", None) or {}).get("EQ_TABLE", ""))
+    if src.startswith("linear model"):
+        reasons.append("EQ_TABLE is the provisional linear model (up to 0.3 off at J = 3%); wait for stage b or m")
     for name in ("EQ_LABELS", "PUSH_ORDER", "CALL_ORDER", "EQ_GRID", "EQ_TABLE"):
         if not hasattr(T, name):
             reasons.append(f"missing {name}")

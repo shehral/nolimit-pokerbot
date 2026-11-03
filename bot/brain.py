@@ -45,6 +45,9 @@ PARAMS = {
     "ALLIN_SNAP": 0.85,           # adapter: a raise-to at or above this share of max_raise_to goes all-in
     "FALLBACK_V0": True,          # P15: an exception in v1/v2 work returns the v0 decision (ICM and typing off),
                                   # not check/fold; only if that also fails does the shell check/fold
+    "KEEP_BOARD_AWARE": False,    # keep/discard/toss requests: True = keep_policy (postflop class on the known board
+                                  # + NLHE order); False = the variant layer's static keep. Toss A/B 2026-11-03, 1,000
+                                  # paired tables vs 7 TossExample: board-aware -2.6 pts [-3.7, -1.5], so OFF
     # ---- payout and ICM (v1+)
     "ICM_ON": None,               # None = auto (off under winner-take-all, where every BF is 1); True/False forces
     "BF_MIN": 0.5, "BF_MAX": 6.0,  # BF clamp (tested values)
@@ -490,6 +493,9 @@ def keep_policy(view):
     if fmt == "card":
         return hole[disc[0]]
     return None
+
+
+KEEP_POLICY = keep_policy if PARAMS["KEEP_BOARD_AWARE"] else None     # the shell passes this to defaults.respond
 
 
 def bounty_pot(v, pot):

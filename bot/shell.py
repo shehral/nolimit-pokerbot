@@ -112,7 +112,7 @@ try:
 except BaseException as _e:      # noqa: BLE001
     VLAYER = None
     _IMPORT_ERRORS.append(f"variant layer: {type(_e).__name__}: {_e}")
-_KEEP_POLICY = getattr(brain, "keep_policy", None) if brain is not None else None
+_KEEP_POLICY = getattr(brain, "KEEP_POLICY", None) if brain is not None else None   # None = the layer's static keep
 _REQ_BUDGET_US = 200             # the optional keep policy must answer inside this, else the layer's static default
 
 
