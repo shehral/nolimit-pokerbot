@@ -6,7 +6,8 @@ load() picks the tables ONCE at import of brain.py:
   2. else bot/variant_tables.py if it exists (the event-day build target: --out bot/variant_tables.py)
   3. else the built-in NLHE tables (bot/bot_tables.py), the pre-integration bot exactly
 A candidate is used only if it imports, passes the gate (variant/bridge.gate_tables: SANITY ok, equity stage done,
-META stderr of stage a <= NOLIMIT_TABLES_MAX_STDERR, default 0.015) and its labels match the class space rebuilt from
+META stderr of stage a <= NOLIMIT_TABLES_MAX_STDERR, default 0.015, not the provisional linear table, and the FINAL
+write of the build, unless NOLIMIT_TABLES_ALLOW_CHECKPOINT=1) and its labels match the class space rebuilt from
 its SPEC_PARAMS (or, for older modules without SPEC_PARAMS, inferred from the class count: 169 NLHE, 81 short deck,
 1,755 three-dealt-keep-two). Anything else falls back to the built-in tables with the reason. One line on stderr says
 which tables are active (NOLIMIT_TABLES_QUIET=1 silences it); INFO holds the same facts.
@@ -23,6 +24,7 @@ import sys
 ENV_TABLES = "NOLIMIT_TABLES"
 ENV_MAX_STDERR = "NOLIMIT_TABLES_MAX_STDERR"
 ENV_QUIET = "NOLIMIT_TABLES_QUIET"
+ENV_ALLOW_CKPT = "NOLIMIT_TABLES_ALLOW_CHECKPOINT"
 BUILTIN_WORDS = ("", "builtin", "nlhe", "none", "0", "off")
 DEFAULT_FILE = "variant_tables.py"
 MAX_STDERR = 0.015
@@ -172,7 +174,9 @@ def _load_variant(path, reasons):
         max_se = float(os.environ.get(ENV_MAX_STDERR, MAX_STDERR))
     except ValueError:
         max_se = MAX_STDERR
-    ok, why = B.gate_tables(T, max_stderr=max_se)
+    # a checkpoint (META final False) is refused unless NOLIMIT_TABLES_ALLOW_CHECKPOINT=1: a build that writes into
+    # the path the bot reads must not be picked up half-way (stage b rows partly filled from the linear model)
+    ok, why = B.gate_tables(T, max_stderr=max_se, require_final=os.environ.get(ENV_ALLOW_CKPT) != "1")
     if not ok:
         reasons.extend(why)
         return None

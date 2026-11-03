@@ -55,6 +55,14 @@ def test_noisy_toss_build_is_gated_on_stderr():
     assert any(r.startswith("stderr a 0.02") for r in a.reasons), a.reasons
 
 
+def test_checkpoint_refused_unless_allowed(tmp_path, monkeypatch):
+    p = _copy_edit(tmp_path, SHORT, "ckpt.py", "'final': True", "'final': False")
+    a = TL.load(p, quiet=True)
+    assert a.kind == "builtin" and any("checkpoint" in r for r in a.reasons), a.reasons
+    monkeypatch.setenv(TL.ENV_ALLOW_CKPT, "1")
+    assert TL.load(p, quiet=True).kind == "variant"
+
+
 def test_labels_of_another_game_are_rejected(tmp_path):
     # shortdeck tables that claim (via SPEC_PARAMS) to be 52-card hold'em: label sets differ -> rejected
     with open(SHORT) as f:
