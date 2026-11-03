@@ -45,6 +45,10 @@ PARAMS = {
     "ALLIN_SNAP": 0.85,           # adapter: a raise-to at or above this share of max_raise_to goes all-in
     "FALLBACK_V0": True,          # P15: an exception in v1/v2 work returns the v0 decision (ICM and typing off),
                                   # not check/fold; only if that also fails does the shell check/fold
+    "BOUNTY_PARTS": ("jam", "call"),   # bounty hit (adapter v.bounty): where the payoff hook re-prices: "jam" first-in
+                                  # jam depth, "call" calls of all-ins, "post" postflop call thresholds. A/B 2026-11-03
+                                  # (1,500 paired tables vs 7 BountyExample, pts vs no hook): jam +0.08 [-0.05, +0.22],
+                                  # call -0.03 [-0.09, +0.04], post -0.83 [-1.29, -0.36] -> post OFF
     "KEEP_BOARD_AWARE": False,    # keep/discard/toss requests: True = keep_policy (postflop class on the known board
                                   # + NLHE order); False = the variant layer's static keep. Toss A/B 2026-11-03, 1,000
                                   # paired tables vs 7 TossExample: board-aware -2.6 pts [-3.7, -1.5], so OFF
@@ -498,13 +502,35 @@ def keep_policy(view):
 KEEP_POLICY = keep_policy if PARAMS["KEEP_BOARD_AWARE"] else None     # the shell passes this to defaults.respond
 
 
-def bounty_pot(v, pot):
-    """Pot as the payoff sees it: with a bounty hit (v.bounty = (mult, flat)) winning pays the others' chips x
-    (1 + mult) + flat, so the pot we can win grows by mult x (pot - our chips in) + flat. Unchanged otherwise."""
+def bounty_bonus(v, exclude=-1):
+    """Extra chips a bounty hit wins (v.bounty = (mult, flat)): mult x the chips the others put in + flat, paid by
+    those others and capped by the chips they still hold. A player who is all-in (or `exclude`, a jammer we call)
+    has nothing left after losing, so pays nothing (the rehearsal engine's rule; a stacks-reset rule like MIT 2025
+    would pay; PLATFORM: check). Measured 2026-11-03: pricing the bonus into calls of all-ins as if it were paid lost
+    0.8 pts per table vs no hook."""
     b = v.bounty
-    if b is None:
+    me = v.me
+    paid = 0
+    room = 0
+    for j in range(v.n):
+        if j == me or j == exclude:
+            continue
+        c = v.contrib[j]
+        s = v.stacks[j]
+        if c > 0 and s > 0 and not v.all_in[j]:
+            paid += c
+            room += s
+    if paid <= 0:
+        return 0.0
+    x = b[0] * paid + b[1]
+    return x if x < room else room
+
+
+def bounty_pot(v, pot):
+    """Pot as the payoff sees it: a bounty hit adds bounty_bonus (payers with chips left only). Unchanged otherwise."""
+    if v.bounty is None:
         return pot
-    return pot + b[0] * (pot - v.contrib[v.me]) + b[1]
+    return pot + bounty_bonus(v)
 
 
 # ===================================== ICM (exact Malmuth-Harville; padded payouts) =====================
@@ -1135,7 +1161,7 @@ class Brain:
                 return ("raise", v.min_to)                                # E09: free steal (min-raise any two)
             S = min(tot[me], max(tot[j] for j in callers)) / bb
             if S <= P["PF_DEPTH_BB"]:
-                pot_w = v.pot if v.bounty is None else bounty_pot(v, v.pot)   # a bounty hit = more to win
+                pot_w = v.pot if (v.bounty is None or "jam" not in P["BOUNTY_PARTS"]) else bounty_pot(v, v.pot)
                 S_eq = equiv_depth(S, pot_w / bb, P)                      # antes and limps = more dead money
                 J = jam_pct(S_eq, len(callers), P["JAM_FIT"]) * P["JAM_MULT"]
                 if self.icm_on:
@@ -1299,8 +1325,8 @@ class Brain:
                 W += c if c < mine else mine
         # winning returns our own chips already in (contrib) plus W; risk premium BF on the R chips we add
         gain = W + contrib[me]
-        if v.bounty is not None:
-            gain += v.bounty[0] * W + v.bounty[1]                         # bounty hit: others' chips x (1 + mult) + flat
+        if v.bounty is not None and "call" in P["BOUNTY_PARTS"]:
+            gain += bounty_bonus(v, jammer)                               # bounty hit: only payers with chips left
         b = self.bf(me, jammer) if self.icm_on else 1.0
         need = b * R / (b * R + gain) + P["CALL_BEHIND_MARGIN"] * n_left + P["CALL_EQ_ADJ"]
         if eq >= need:
@@ -1357,7 +1383,7 @@ class Brain:
                 return ("call",)
             return self.bet(v, int(P["RAISE_MULT"] * cur))
         ec = 2 if (light and cls >= 1) else cls
-        if v.bounty is not None:
+        if v.bounty is not None and "post" in P["BOUNTY_PARTS"]:
             pot = bounty_pot(v, pot)                                     # call thresholds see the bounty payoff
         if ec >= 2:
             if raised_me and not light:
