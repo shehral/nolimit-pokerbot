@@ -103,7 +103,34 @@ def _gc_due():
         GC_STATS["gen1"] += 1
 
 
+# The variant layer (variant/defaults.respond etc.), loaded once through brain's tables_loader; None = not present
+# (then the adapter's safe_request answers special requests). Loading it never raises.
+VLAYER = None
+try:
+    if brain is not None and getattr(brain, "TABLES_LOADER", None) is not None:
+        VLAYER = brain.TABLES_LOADER.variant_layer()
+except BaseException as _e:      # noqa: BLE001
+    VLAYER = None
+    _IMPORT_ERRORS.append(f"variant layer: {type(_e).__name__}: {_e}")
+_KEEP_POLICY = getattr(brain, "keep_policy", None) if brain is not None else None
+_REQ_BUDGET_US = 200             # the optional keep policy must answer inside this, else the layer's static default
+
+
 def _safe(state):
+    """The rules' own fallback for a betting decision (check if legal, else fold); for a special request, a legal
+    answer by construction (adapter.safe_request, else the first listed option), never check/fold."""
+    try:
+        req = state.get("request")
+        if req not in (None, "act", "bet", "betting", "action"):
+            try:
+                if adapter is not None:
+                    return adapter.safe_request(state, adapter.request_of(state))
+            except BaseException:    # noqa: BLE001
+                pass
+            opts = state.get(f"{req}_options") or state.get("options") or [0]
+            return {"action": req, "index": opts[0]}
+    except BaseException:        # noqa: BLE001
+        pass
     try:
         return {"action": "check"} if "check" in state["legal_actions"] else {"action": "fold"}
     except BaseException:        # noqa: BLE001
@@ -128,6 +155,7 @@ class Bot:
         self.errors = 0           # exceptions caught in act (diagnostic; the kit counts its own)
         self.fallbacks = 0        # ... of which recovered by the v0 decision (P15)
         self.illegal_fixed = 0    # results that failed our own legality check and were replaced by the fallback
+        self.requests = 0         # special (non-betting) requests answered (discard, keep, toss, bid, ...)
         self._snap = SHELL_PARAMS["ALLIN_SNAP"]
         self._fallback = bool(SHELL_PARAMS["FALLBACK_V0"])
         self._brain = None
@@ -159,6 +187,9 @@ class Bot:
                 if STRICT:
                     raise RuntimeError("bot failed to import or construct: " + "; ".join(_IMPORT_ERRORS))
                 return _safe(state)
+            req = adapter.request_of(state)
+            if req is not None:
+                return self._request(state, req)
             view = adapter.normalize(state)
             try:
                 dec = b.decide(view, t0)
@@ -183,6 +214,24 @@ class Bot:
         finally:
             if g:
                 gc.enable()
+
+    def _request(self, state, req):
+        """A special (non-betting) request: variant layer respond() with the brain's board-aware keep policy (kept
+        only if legal and inside _REQ_BUDGET_US), then our own legality check; any failure gives the adapter's
+        safe_request (legal by construction). Runs inside act(), so it is timed and GC-guarded like every decision."""
+        self.requests += 1
+        try:
+            out = adapter.answer_request(state, req, VLAYER, _KEEP_POLICY, _REQ_BUDGET_US)
+        except Exception:         # noqa: BLE001
+            if STRICT:
+                raise
+            self.errors += 1
+            out = None
+        if out is not None and (adapter.is_legal_request(out, state, req) or STRICT):
+            return out
+        if out is not None:
+            self.illegal_fixed += 1
+        return adapter.safe_request(state, req)
 
     def observe(self, event):
         try:
@@ -293,6 +342,26 @@ def _warm_up():
             if throwaway._brain is not None:
                 throwaway._brain.seat = st["seat"]
             throwaway.act(st)
+    # variant paths (3 dealt cards preflop, special requests, a second board): warm on a separate throwaway
+    deck = [r + s for r in "23456789TJQKA" for s in "cdhs"]
+    throwaway = Bot(0, dict(cfg, bot_version=2))
+    for i, st in enumerate(states[:max(1, n // 3)]):
+        st = dict(st)
+        cards = rng.sample(deck, 12)
+        throwaway.seat = st["seat"]
+        if throwaway._brain is not None:
+            throwaway._brain.seat = st["seat"]
+        k = i % 3
+        if k == 0:
+            st["hole"] = cards[:3]
+            st["street"], st["board"] = "preflop", []
+        elif k == 1:
+            st = dict(st, request="discard", hole=cards[:3], board=cards[3:5 + i % 4], legal_actions=["discard"],
+                      discard_options=[0, 1, 2], to_call=0, min_raise_to=0, max_raise_to=0, street="flop")
+        else:
+            st["street"], st["board"] = "flop", cards[2:5]
+            st["boards"] = [cards[2:5], cards[5:8]]
+        throwaway.act(st)
 
 
 WARMUP_INFO = {}

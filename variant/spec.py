@@ -8,6 +8,7 @@ card counts it accepts, speed, category order on hand-checked cases). Worked exa
 bot's current 169-class setup; short_deck_spec(), three_keep_two_spec(), omaha_spec(), toss_spec() are rehearsal
 shapes.
 """
+import dataclasses
 import random
 import time
 from dataclasses import dataclass, field
@@ -97,6 +98,10 @@ class VariantSpec:
     ante_bb, straddle, payouts, blind_schedule: forced bets and payout (the ICM layer reads payouts)
     keep_score    optional callable(cards) -> float to pick kept subsets (default static_score)
     share_fn      optional callable(spec, dealt_hands, board) -> pot shares, for showdowns the default cannot express
+    bounty        None, or a dict {"mult": 0.5, "flat": 10, "mode": "level"|"hand"}: a pot won while the player's
+                  (hidden, per-player) bounty rank is in its hole cards or on the board pays normal x (1 + mult) +
+                  flat (MIT 2025 Bounty Hold'em). Card equities are unchanged, so tables build as for the plain game;
+                  bounty_payoff() is the payoff hook the bot uses to re-price its pot odds.
     """
     name: str = "custom"
     rank_chars: str = STD_RANKS
@@ -123,6 +128,7 @@ class VariantSpec:
     blind_schedule: Optional[Tuple] = None
     keep_score: Optional[Callable] = None
     share_fn: Optional[Callable] = None
+    bounty: Optional[dict] = None
     notes: str = ""
     _deck: tuple = field(default=None, repr=False, compare=False)
 
@@ -164,6 +170,45 @@ class VariantSpec:
         custom share_fn), which use the generic rollout engine."""
         return (self.share_fn is None and not self.hi_lo and self.n_boards == 1
                 and not (self.hole_kept and self.discard_to == "board"))
+
+    # ------------------------------------------------------------------ bounty and table helpers
+    def bounty_payoff(self, normal, hit=True):
+        """Chips won from the others for a pot whose normal winnings are `normal` (what the others put in): with a
+        bounty hit normal x (1 + mult) + flat, else normal. Without a bounty rule always normal."""
+        b = self.bounty
+        if not b or not hit:
+            return normal
+        return normal * (1.0 + float(b.get("mult", 0.5))) + float(b.get("flat", 10))
+
+    @property
+    def pure_multi_board(self):
+        """Several boards that only split the pot (no hi/lo, no custom share, no toss to the board): each board is an
+        independent hold'em board, so all-in equity = mean of the per-board equities = single-board equity."""
+        return (self.n_boards > 1 and self.share_fn is None and not self.hi_lo
+                and not (self.hole_kept and self.discard_to == "board"))
+
+    def table_spec(self):
+        """The spec the tables should be BUILT with. A pure multi-board game has exactly the single-board equities,
+        so it builds on n_boards = 1: separable, the fast range/matrix engines and the push/fold re-solve (verify
+        2026-11-03: doubleboard as a rollout build lost the matrix, the solver and most of its boards)."""
+        if self.pure_multi_board:
+            note = f"tables built on 1 board (same equities as {self.n_boards} boards)"
+            return dataclasses.replace(self, n_boards=1, _deck=None,
+                                       notes=(self.notes + "; " + note) if self.notes else note)
+        return self
+
+    def spec_params(self):
+        """The literal fields a HandSpace needs, written into every generated tables module as SPEC_PARAMS so the
+        bot can rebuild the class space without the spec file. Callables (evaluator, keep_score) are not included:
+        a custom keep_score is the one thing the bot cannot rebuild from this (flagged by custom_keep_score)."""
+        return {"name": self.name, "rank_chars": self.rank_chars, "suit_chars": self.suit_chars,
+                "removed_ranks": self.removed_ranks, "removed_suits": self.removed_suits,
+                "removed_cards": list(self.removed_cards), "hole_dealt": self.hole_dealt,
+                "hole_kept": self.hole_kept, "keep_street": self.keep_street, "discard_to": self.discard_to,
+                "discards_public": self.discards_public, "board_schedule": list(self.board_schedule),
+                "n_boards": self.n_boards, "must_use": list(self.must_use) if self.must_use else None,
+                "hi_lo": self.hi_lo, "ante_bb": self.ante_bb, "bounty": dict(self.bounty) if self.bounty else None,
+                "custom_keep_score": self.keep_score is not None}
 
     # ------------------------------------------------------------------ hands
     def hand_value(self, hole, board):
@@ -251,7 +296,8 @@ class VariantSpec:
         return (f"{self.name}: deck {len(d)} cards, dealt {self.hole_dealt}"
                 f"{', keep ' + str(self.hole_kept) + ' at street ' + str(self.keep_street) + ' to ' + self.discard_to if self.hole_kept else ''}"
                 f", board {self.board_schedule} x{self.n_boards}, must_use {self.must_use}, hi_lo {self.hi_lo}, "
-                f"requests {req}, ante {self.ante_bb} bb, separable {self.separable}")
+                f"requests {req}, ante {self.ante_bb} bb, separable {self.separable}"
+                f"{', bounty ' + repr(self.bounty) if self.bounty else ''}")
 
 
 def _split(out, vals, w):
@@ -268,16 +314,30 @@ def _split(out, vals, w):
 
 
 # ===================================================================== kit helper
-def probe_evaluator(spec, n_calls=2000, seed=7):
+def showdown_sizes(spec, n_seats=8):
+    """(cards a heads-up showdown evaluates, the most cards any showdown evaluates with n_seats players). They differ
+    when discards go to the board: an 8-seat toss showdown is 2 kept + 2 flop + 8 tosses + 2 = 14 cards."""
+    per_toss = spec.hole_dealt - spec.n_kept if spec.discard_to == "board" else 0
+    base = spec.n_kept + sum(spec.board_schedule)
+    return base + 2 * per_toss, base + n_seats * per_toss
+
+
+def probe_evaluator(spec, n_calls=2000, seed=7, n_seats=8, exact_hands=40):
     """Check a kit evaluator BEFORE building any table (variants_deep s5.1 D: "test the evaluator on 10 hand-checked
     cases"). Returns a dict: card counts accepted, microseconds per call, category order seen on hand-checked hands
-    (standard encoding only), determinism and card-order invariance. Never raises."""
-    rep = {"ok": True, "errors": []}
+    (standard encoding only), determinism and card-order invariance, and EXACTNESS at every showdown size up to the
+    n_seats-player maximum (vs the best 5-card subset scored by the same evaluator): "exact" maps card count ->
+    True/False. An evaluator that is inexact at the heads-up size the build uses fails the probe; inexact only at
+    larger multiway sizes is a warning (a kit evaluator exact for 5-7 cards only is silently wrong on 8+ cards).
+    Never raises."""
+    rep = {"ok": True, "errors": [], "warnings": []}
     rng = random.Random(seed)
     deck = list(spec.deck)
-    n_play = spec.n_kept + sum(spec.board_schedule) + (spec.hole_dealt - spec.n_kept if spec.discard_to == "board" else 0)
+    n_play, n_max = showdown_sizes(spec, n_seats)
+    n_max = min(n_max, len(deck))
+    rep["showdown_cards"] = {"heads_up": n_play, "max_multiway": n_max}
     accepted = {}
-    for n in range(5, min(len(deck), max(n_play, 7)) + 1):
+    for n in range(5, min(len(deck), max(n_max, 7)) + 1):
         try:
             spec.evaluator(rng.sample(deck, n))
             accepted[n] = True
@@ -300,6 +360,34 @@ def probe_evaluator(spec, n_calls=2000, seed=7):
     except Exception as e:  # noqa: BLE001
         rep["ok"] = False
         rep["errors"].append(f"evaluator raised {type(e).__name__}: {e}")
+    # exactness at every showdown size above 5 (reference: best 5-card subset under the same evaluator)
+    exact = {}
+    for n in range(6, n_max + 1):
+        if accepted.get(n) is not True:
+            exact[n] = False
+            continue
+        m = exact_hands if n <= 9 else exact_hands * 2      # kit evaluator: 1/400 wrong at 12 cards, 15/400 at 14
+        ok_n = True
+        try:
+            for _ in range(m):
+                h = rng.sample(deck, n)
+                ref = max(spec.evaluator(list(c)) for c in combinations(h, 5))
+                if spec.evaluator(h) != ref:
+                    ok_n = False
+                    break
+        except Exception:  # noqa: BLE001
+            ok_n = False
+        exact[n] = ok_n
+    rep["exact"] = exact
+    bad = [n for n, v in exact.items() if not v]
+    if spec.must_use is None and bad:
+        if any(n <= n_play for n in bad):
+            rep["ok"] = False
+            rep["errors"].append(f"evaluator inexact at {[n for n in bad if n <= n_play]} cards (the build uses "
+                                 f"{n_play}); wrap it as best-of-five or use variant.cards.evaluate_upto9")
+        else:
+            rep["warnings"].append(f"evaluator inexact at {bad} cards (multiway showdowns up to {n_max}); our "
+                                   f"tables are fine, but any bot that uses this evaluator postflop misreads them")
     # hand-checked categories (needs the standard encoding and the cards to exist in the deck)
     cd = spec.codec
     cases = {
@@ -385,6 +473,27 @@ def toss_spec():
                        discards_public=True, board_schedule=(2, 1, 1), evaluator=evaluate_upto9,
                        requests=(RequestType("toss", "DiscardAction", response="index", k=1),),
                        revealed=("tossed card",))
+
+
+def spec_from_params(p):
+    """Rebuild a VariantSpec from SPEC_PARAMS (VariantSpec.spec_params) for class lookups (HandSpace). The evaluator
+    is a stand-in chosen by the deck (short deck -> evaluate_short, discards to the board -> evaluate_upto9, else
+    evaluate52): the bot never evaluates showdowns through it."""
+    p = dict(p or {})
+    rr = p.get("removed_ranks", "") or ""
+    ev = evaluate_short if set("2345") <= set(rr) else (
+        evaluate_upto9 if p.get("discard_to") == "board" else evaluate52)
+    mu = p.get("must_use")
+    return VariantSpec(name=p.get("name", "tables"), rank_chars=p.get("rank_chars", STD_RANKS),
+                       suit_chars=p.get("suit_chars", STD_SUITS), removed_ranks=rr,
+                       removed_suits=p.get("removed_suits", "") or "",
+                       removed_cards=tuple(p.get("removed_cards") or ()), hole_dealt=int(p.get("hole_dealt", 2)),
+                       hole_kept=p.get("hole_kept"), keep_street=int(p.get("keep_street", 0) or 0),
+                       discard_to=p.get("discard_to", "muck"), discards_public=bool(p.get("discards_public")),
+                       board_schedule=tuple(p.get("board_schedule") or (3, 1, 1)),
+                       n_boards=int(p.get("n_boards", 1) or 1), evaluator=ev,
+                       must_use=tuple(mu) if mu else None, hi_lo=bool(p.get("hi_lo")),
+                       ante_bb=float(p.get("ante_bb", 0.0) or 0.0), bounty=p.get("bounty"))
 
 
 EXAMPLES = {"nlhe": nlhe_spec, "short_deck": short_deck_spec, "three_keep_two": three_keep_two_spec,

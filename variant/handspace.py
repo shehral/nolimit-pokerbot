@@ -204,10 +204,53 @@ class HandSpace:
             return ci
         return self.key_index[self._key(tuple(sorted(hole)))]
 
+    def class_of_dealt(self, hole):
+        """Class of a hand whose size differs from the dealt size n (raises if it cannot place it):
+        more cards than n (e.g. 3 dealt cards against 2-card classes): the best n-subset by the keep score;
+        fewer (e.g. the 2 cards kept after a toss against 3-dealt classes): the class of the dealt hand completed
+        with the lowest deck card for which the static keep rule keeps exactly these cards (keep|lowest discard).
+        Verify 2026-11-03: the post-toss 2-card hole used to fall to class 0, the best class."""
+        hole = tuple(hole)
+        m = len(hole)
+        if m == self.n:
+            return self.class_of(hole)
+        if m > self.n:
+            best, bk = None, None
+            for sub in combinations(hole, self.n):
+                s = self._score(sub)
+                if bk is None or s > bk:
+                    best, bk = sub, s
+            return self.class_of(best)
+        if not self.choice or m != self.k:
+            raise KeyError(f"cannot place a {m}-card hand in {self.n}-card classes")
+        hs = set(hole)
+        fill = sorted((c for c in self.deck if c not in hs), key=lambda c: (c // self.slot, c % self.slot))
+        need = self.n - m
+        for extra in combinations(fill[:12 + need], need):
+            hand = tuple(sorted(hole + extra))
+            kept, _ = self.split(hand)
+            if set(kept) == hs:
+                return self.class_of(hand)
+        # no completion keeps these cards (a hand the keep rule never keeps, such as 72o next to any third card):
+        # the class whose kept cards score closest to this hand's static score, the weakest such class on ties
+        if getattr(self, "_kept_scores", None) is None:
+            self._kept_scores = [self._score(self.kept_of(i)) for i in range(self.n_classes)]
+        target = self._score(hole)
+        rank = self.pct if self.pct is not None else None
+        return min(range(self.n_classes),
+                   key=lambda i: (abs(self._kept_scores[i] - target), -(rank[i] if rank else i)))
+
     def class_of_safe(self, hole, default=None):
-        """class_of that never raises: unknown hands map to `default` (the median class by strength if set)."""
+        """class_of that never raises: a hand of another size goes through class_of_dealt; anything still unknown
+        maps to `default` (else the median class by strength, else the median by static score)."""
         try:
-            ci = self.class_of(hole)
+            ci = self.class_of(hole) if len(hole) == self.n else self.class_of_dealt(hole)
+            if ci is not None and ci >= 0:
+                return ci
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ci = self.class_of_dealt(hole)
             if ci is not None and ci >= 0:
                 return ci
         except Exception:  # noqa: BLE001

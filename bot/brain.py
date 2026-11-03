@@ -27,6 +27,7 @@ The brain never sees the kit's raw state: adapter.py turns it into a View. It re
 import bisect
 import random
 import time
+from itertools import combinations as _combinations
 
 # ===================================== PARAMS: every tunable number =====================================
 PARAMS = {
@@ -311,6 +312,193 @@ def hand_class(h1, h2, board):
             if amask & w == w and hm & w and bmask & w != w:
                 return 1
     return cls
+
+
+# ===================================== variant seam: swapped tables, any hole-card count =====================
+# The built-in NLHE tables above stay in force unless tables_loader accepts a rebuilt tables module (env
+# NOLIMIT_TABLES or bot/variant_tables.py; see tables_loader.py). Then LABELS ... EQ_ROWS come from
+# variant/bridge.brain_names (same meaning, the variant's class space) and _SEAM holds its HandSpace. With _SEAM None
+# and two hole cards every lookup is the pre-integration one (tests/test_nlhe_identity.py: 20,000 decisions equal).
+_NL_CLASS_OF, _NL_PUSH_PCT = CLASS_OF, PUSH_PCT        # NLHE 2-card strength, kept for the keep policy
+_SEAM = None
+TABLES_INFO = "tables: built-in NLHE (bot_tables.py, 169 classes)"
+
+
+def _load_tables_loader():
+    try:
+        from . import tables_loader as tl
+        return tl
+    except ImportError:
+        import importlib.util as _ilu2
+        import os as _os2
+        import sys as _sys2
+        name = "nolimit_bot_tables_loader"
+        tl = _sys2.modules.get(name)
+        if tl is None:
+            sp = _ilu2.spec_from_file_location(name, _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)),
+                                                                    "tables_loader.py"))
+            tl = _ilu2.module_from_spec(sp)
+            _sys2.modules[name] = tl
+            try:
+                sp.loader.exec_module(tl)
+            except BaseException:
+                del _sys2.modules[name]
+                raise
+        return tl
+
+
+try:
+    TABLES_LOADER = _load_tables_loader()
+    _ACTIVE = TABLES_LOADER.load()
+except BaseException:         # noqa: BLE001 - no loader, no swap: the built-in tables
+    TABLES_LOADER = None
+    _ACTIVE = None
+if _ACTIVE is not None and _ACTIVE.kind == "variant":
+    try:
+        _nm = _ACTIVE.names
+        _labels, _cid = list(_nm["LABELS"]), dict(_nm["CLASS_ID"])
+        _push, _call = list(_nm["PUSH_PCT"]), list(_nm["CALL_PCT"])
+        _grid, _rows = list(_nm["EQ_GRID"]), [list(r) for r in _nm["EQ_ROWS"]]
+        LABELS, CLASS_ID, PUSH_PCT, CALL_PCT, EQ_GRID, EQ_ROWS = _labels, _cid, _push, _call, _grid, _rows
+        _G0, _GN = EQ_GRID[0], EQ_GRID[-1]
+        if _ACTIVE.use_fits:
+            PARAMS["JAM_FIT"] = tuple(float(x) for x in _nm["JAM_FIT"])
+            PARAMS["CALL_FIT"] = tuple(float(x) for x in _nm["CALL_FIT"])
+        _SEAM = _ACTIVE.hs
+        TABLES_INFO = TABLES_LOADER.INFO.get("line", "tables: variant")
+    except BaseException:     # noqa: BLE001 - a half-applied swap is worse than none: restore the NLHE tables
+        LABELS = _T.EQ_LABELS.split()
+        CLASS_ID = {lab: i for i, lab in enumerate(LABELS)}
+        PUSH_PCT, CALL_PCT = _NL_PUSH_PCT, [_cp[lab] for lab in LABELS]
+        EQ_GRID, EQ_ROWS = list(_T.EQ_GRID), [list(r) for r in _T.EQ_TABLE]
+        _G0, _GN = EQ_GRID[0], EQ_GRID[-1]
+        _SEAM = None
+        TABLES_INFO = "tables: built-in NLHE (swap failed)"
+_MEDIAN_CLS = min(range(len(PUSH_PCT)), key=lambda i: (abs(PUSH_PCT[i] - 0.5), i))
+
+
+def classify(hole):
+    """Preflop class (row of the active tables) of ANY dealt hand; never raises.
+    Built-in NLHE tables: 2 cards = CLASS_OF; 3+ cards (a toss or keep game before its choice) = the pair with the
+    best push percentile. Swapped tables: the HandSpace class of a hand of its dealt size (3-card toss classes for the
+    3 dealt cards); more cards = the best subset by push percentile; fewer = HandSpace.class_of_safe (the class of
+    the dealt hand that keeps these cards). Anything that fails: the median class, never the best one."""
+    try:
+        n = len(hole)
+        hs = _SEAM
+        if hs is None:
+            if n == 2:
+                return CLASS_OF[hole[0] * 52 + hole[1]]
+            if n > 2:
+                best, bp = -1, 2.0
+                for i in range(n - 1):
+                    hi = hole[i] * 52
+                    for j in range(i + 1, n):
+                        c = CLASS_OF[hi + hole[j]]
+                        if PUSH_PCT[c] < bp:
+                            best, bp = c, PUSH_PCT[c]
+                if best >= 0:
+                    return best
+        else:
+            if n == hs.n:
+                ci = hs.class_of(hole)
+                if ci is not None and ci >= 0:
+                    return ci
+            elif n > hs.n:
+                best, bp = -1, 2.0
+                for sub in _combinations(hole, hs.n):
+                    c = hs.class_of(sub)
+                    if c is not None and c >= 0 and PUSH_PCT[c] < bp:
+                        best, bp = c, PUSH_PCT[c]
+                if best >= 0:
+                    return best
+            return hs.class_of_safe(tuple(hole), default=_MEDIAN_CLS)
+    except Exception:         # noqa: BLE001
+        pass
+    return _MEDIAN_CLS
+
+
+def post_class(hole, board, boards=None):
+    """Postflop class 0..3 of any hole-card count and any number of boards; never raises. 2 cards, one board =
+    hand_class. More cards: the best pair (the 2 kept cards are what a toss game plays after the toss). Several
+    boards: the floor of the mean class (a pot split per board: strong on one board and air on the other is a weak
+    pair overall)."""
+    try:
+        bl = boards if boards else (board,)
+        n = len(hole)
+        tot = 0
+        for b in bl:
+            if n == 2:
+                c = hand_class(hole[0], hole[1], b)
+            else:
+                c = 0
+                for i in range(n - 1):
+                    for j in range(i + 1, n):
+                        x = hand_class(hole[i], hole[j], b)
+                        if x > c:
+                            c = x
+            tot += c
+        return tot // len(bl)
+    except Exception:         # noqa: BLE001
+        pass
+    try:
+        return hand_class(hole[0], hole[1], board)
+    except Exception:         # noqa: BLE001
+        return 0
+
+
+def keep_policy(view):
+    """Board-aware keep for keep/discard/toss requests that keep exactly 2 cards (variant layer view, see
+    variant/defaults.py): score = 10 x postflop class of the kept pair on the board the answer leaves (a tossed card
+    joins the board) + 4 x (1 - NLHE push percentile of the pair). Without a board this is the NLHE preflop order.
+    Returns an answer in the view's format, or None (the layer's static default then answers). About 10-25 us."""
+    kind = view.get("kind")
+    if kind not in ("discard", "keep", "toss"):
+        return None
+    hole = view.get("hole") or ()
+    n = len(hole)
+    k = view.get("k")
+    k = k if isinstance(k, int) and not isinstance(k, bool) else (2 if kind == "keep" else 1)
+    keep_n = k if kind == "keep" else n - k
+    if keep_n != 2 or n < 3:
+        return None
+    board = list(view.get("board") or ())
+    best, bs = None, None
+    for a in range(n - 1):
+        for b in range(a + 1, n):
+            ka, kb = hole[a], hole[b]
+            out = [hole[i] for i in range(n) if i != a and i != b]
+            bd = board + out if kind == "toss" else board
+            s = 4.0 * (1.0 - _NL_PUSH_PCT[_NL_CLASS_OF[ka * 52 + kb]])
+            if bd:
+                s += 10.0 * hand_class(ka, kb, bd)
+            if bs is None or s > bs:
+                best, bs = (a, b), s
+    keep_idx = best
+    disc = [i for i in range(n) if i not in keep_idx]
+    fmt = view.get("response")
+    if fmt in ("index", "index_or_none"):
+        return disc[0]
+    if fmt == "keep_indices":
+        return list(keep_idx)
+    if fmt == "discard_indices":
+        return disc
+    if fmt == "keep_cards":
+        return [hole[i] for i in keep_idx]
+    if fmt == "discard_cards":
+        return [hole[i] for i in disc]
+    if fmt == "card":
+        return hole[disc[0]]
+    return None
+
+
+def bounty_pot(v, pot):
+    """Pot as the payoff sees it: with a bounty hit (v.bounty = (mult, flat)) winning pays the others' chips x
+    (1 + mult) + flat, so the pot we can win grows by mult x (pot - our chips in) + flat. Unchanged otherwise."""
+    b = v.bounty
+    if b is None:
+        return pot
+    return pot + b[0] * (pot - v.contrib[v.me]) + b[1]
 
 
 # ===================================== ICM (exact Malmuth-Harville; padded payouts) =====================
@@ -909,7 +1097,11 @@ class Brain:
         n = v.n
         stacks, bets, in_hand = v.stacks, v.bets, v.in_hand
         tot = [stacks[j] + bets[j] for j in range(n)]
-        cls = CLASS_OF[v.hole[0] * 52 + v.hole[1]]
+        h = v.hole
+        if _SEAM is None and len(h) == 2:
+            cls = CLASS_OF[h[0] * 52 + h[1]]          # the pre-integration lookup (NLHE byte identity)
+        else:
+            cls = classify(h)                          # any dealt count, swapped tables; never raises
         pp = PUSH_PCT[cls]
         cp = CALL_PCT[cls]
         pos = tr.pos.get(me)
@@ -937,7 +1129,8 @@ class Brain:
                 return ("raise", v.min_to)                                # E09: free steal (min-raise any two)
             S = min(tot[me], max(tot[j] for j in callers)) / bb
             if S <= P["PF_DEPTH_BB"]:
-                S_eq = equiv_depth(S, v.pot / bb, P)                      # antes and limps = more dead money
+                pot_w = v.pot if v.bounty is None else bounty_pot(v, v.pot)   # a bounty hit = more to win
+                S_eq = equiv_depth(S, pot_w / bb, P)                      # antes and limps = more dead money
                 J = jam_pct(S_eq, len(callers), P["JAM_FIT"]) * P["JAM_MULT"]
                 if self.icm_on:
                     J = self.icm_jam(J, me, callers)
@@ -1100,6 +1293,8 @@ class Brain:
                 W += c if c < mine else mine
         # winning returns our own chips already in (contrib) plus W; risk premium BF on the R chips we add
         gain = W + contrib[me]
+        if v.bounty is not None:
+            gain += v.bounty[0] * W + v.bounty[1]                         # bounty hit: others' chips x (1 + mult) + flat
         b = self.bf(me, jammer) if self.icm_on else 1.0
         need = b * R / (b * R + gain) + P["CALL_BEHIND_MARGIN"] * n_left + P["CALL_EQ_ADJ"]
         if eq >= need:
@@ -1113,7 +1308,11 @@ class Brain:
         me = v.me
         n = v.n
         ver = self.version
-        cls = hand_class(v.hole[0], v.hole[1], v.board)
+        h = v.hole
+        if len(h) == 2 and v.boards is None:
+            cls = hand_class(h[0], h[1], v.board)      # the pre-integration path (NLHE byte identity)
+        else:
+            cls = post_class(h, v.board, v.boards)     # 3+ cards or several boards; never raises
         pot = v.pot
         to_call = v.to_call
         stack = v.stacks[me]
@@ -1152,6 +1351,8 @@ class Brain:
                 return ("call",)
             return self.bet(v, int(P["RAISE_MULT"] * cur))
         ec = 2 if (light and cls >= 1) else cls
+        if v.bounty is not None:
+            pot = bounty_pot(v, pot)                                     # call thresholds see the bounty payoff
         if ec >= 2:
             if raised_me and not light:
                 if to_call <= P["RAISED_CALL2_MAX_POT"] * pot and not big:
