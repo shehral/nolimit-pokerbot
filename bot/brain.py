@@ -118,6 +118,48 @@ PARAMS = {
     "BF_RAISE3_MAX": 2.0,         # v1+: big class-3 spot: just call when BF >= this
     "COMMIT_FRAC": 0.45,          # a bet or raise that puts in >= this share of my chips goes all-in instead
     "CBET_AIR_UNKNOWN": 0.0,      # air c-bet frequency vs a seat with no fold evidence (P10: default off)
+    "POSTFLOP_ENGINE": False,     # True: hold'em postflop decisions by bot/postflop.py (equity of our hand class vs an
+                                  # action-conditioned range, precomputed by tools/make_postflop_tables.py; lookups
+                                  # only); False = the hand-class rules below (byte-identical). POSTFLOP_ENGINE notes
+    "PE": {                       # postflop engine knobs (a partial dict in params overrides these key by key)
+        # Opponent model: stratum s = 0 air, 1 weak pair or 8+ out draw, 2 top pair / overpair, 3 two pair+; width =
+        # tight / medium / wide from the typing label. The probabilities below were MEASURED on the AI_MIX + STRONG
+        # fields (seed 9002, 300 tables each, the opponents' own hole cards; POSTFLOP_ENGINE notes section 3).
+        "FIRST": True, "FACING": True,    # engine decides when checked to us / when facing a bet (False = class rules)
+        "REAL": ((0.70, 0.80, 1.0), (0.85, 0.90, 1.0), (0.95, 0.98, 1.0)),
+        #   equity realization [hand group][street]: air / overcards / gutshots, 8+ out draws, made pairs or better
+        "REF_FRAC": 0.6,                  # W_CALL is for a bet of this x pot; f x pot uses w ** (f / REF_FRAC)
+        "W_CALL": (((0.21, 0.80, 1.0, 1.0), (0.49, 0.85, 1.0, 1.0), (0.18, 0.91, 0.97, 1.0)),      # tight
+                   ((0.20, 0.71, 1.0, 0.99), (0.38, 0.75, 0.98, 1.0), (0.24, 0.81, 0.96, 0.99)),   # medium
+                   ((0.16, 0.94, 1.0, 1.0), (0.42, 0.93, 1.0, 1.0), (0.13, 0.97, 1.0, 0.99))),    # wide
+        #   [width][street][s]: P(continue vs a bet); scaled per seat toward its shrunk observed fold rate (v2)
+        "W_BET": (((0.07, 0.45, 0.97, 1.0), (0.02, 0.15, 0.95, 1.0), (0.02, 0.28, 0.95, 1.0)),
+                  ((0.17, 0.41, 0.90, 0.95), (0.04, 0.19, 0.84, 0.92), (0.05, 0.29, 0.81, 0.90)),
+                  ((0.62, 0.81, 0.91, 0.91), (0.55, 0.65, 0.75, 0.76), (0.44, 0.58, 0.61, 0.69))),
+        #   [style][street][s]: P(bet when it can); also the shape of a bettor's range. Styles: tight (folder, nit),
+        #   medium (every other seat: the measured non-aggressive bots), wide (maniac, loose: the measured
+        #   station / lag / pushfold maniac / ai_aggro group)
+        "CBET_W": (0.40, 0.60),           # floors of the air / weak bet weights when the bettor c-bets the flop
+        "W_RAISE": ((0.01, 0.06, 0.13, 0.70), (0.01, 0.07, 0.15, 0.55), (0.02, 0.12, 0.22, 0.55)),
+        #   [street][s]: P(raise our bet); also the shape of a raiser's range
+        "CONT_RAISE": (0.50, 0.95, 0.98, 1.0),   # P(continue when we raise its bet)
+        "OPP_BET_FRAC": 0.6,              # its bet size (x pot) after our check, in the check EV when we act first
+        "SIZE_EXP": 0.5,                  # facing f x pot > REF_FRAC: air / weak weights x (REF_FRAC / f) ** this
+        "K_OBS": 6.0,                     # pseudo-observations of the model fold rate when scaling to observed folds
+        "STRONG_FLOOR": 0.95,             # two pair+ continues at least this often whatever the observed fold rate
+        "SIZES_DRY": (0.33, 0.5, 0.75),   # heads-up bet sizes (x pot) by EV, rainbow / two-tone and disconnected ...
+        "SIZES_WET": (0.5, 0.75, 1.0),    # ... other boards. Top pair+ always bets (VALUE_FRAC_CALLER vs a typed
+        #                                   caller, VALUE_FRAC multiway); weak / middle pairs without a draw check
+        "BET_MARGIN": 0.02,               # a bet (raise) must beat checking (calling) by this x pot
+        "SEMI_MAX_OPP": 1,                # semi-bluffs (8+ out draws, at most a middle pair) with at most this many opps
+        "BLUFF_FREQ": 0.5,                # pure bluffs: heads-up, dry board, a seat with fold evidence, this often ...
+        "BLUFF_NOBLOCK": 0.4,             # ... x this without an A/K/Q above the board (blocker)
+        "BLUFF_MIN_OBS": 3, "BLUFF_FOLD_T": 0.45,   # fold evidence: shrunk postflop fold rate >= T over >= MIN bets
+        "RAISE_MIN_EQ": (0.60, 0.60, 0.65),   # heads-up: a value raise is considered from this equity vs the range
+        "RAISE_EQ_MULTI": 0.75,           # multiway: raise from this equity (x the others' calling ranges)
+        "RERAISE_EQ": 0.85,               # re-raise a raise of our bet from this equity vs the raiser's range
+        "CALL_MARGIN": 0.0,               # required equity of a call = pot odds (BF-weighted when big) + this
+    },
     # ---- v2 typing (shrinkage: estimate = (hits + k * mean) / (n + k))
     "PRIOR": {"vol": (0.30, 12), "jam": (0.05, 10), "calljam": (0.35, 6), "post_call": (0.45, 8),
               "flop_fold": (0.30, 6), "late_open": (0.25, 8)},
@@ -337,6 +379,36 @@ def hand_class(h1, h2, board):
             if amask & w == w and hm & w and bmask & w != w:
                 return 1
     return cls
+
+
+# Postflop engine (bot/postflop.py, PARAMS["POSTFLOP_ENGINE"]): equity-vs-range lookups. Loaded at import (its
+# tables decode in about a millisecond); None when it or its tables are missing, and the hand-class path decides.
+def _load_postflop():
+    try:
+        from . import postflop as pf
+    except ImportError:
+        import importlib.util as _ilu4
+        import os as _os4
+        import sys as _sys4
+        name = "nolimit_bot_postflop"
+        pf = _sys4.modules.get(name)
+        if pf is None:
+            sp = _ilu4.spec_from_file_location(name, _os4.path.join(_os4.path.dirname(_os4.path.abspath(__file__)),
+                                                                    "postflop.py"))
+            pf = _ilu4.module_from_spec(sp)
+            _sys4.modules[name] = pf
+            try:
+                sp.loader.exec_module(pf)
+            except BaseException:
+                del _sys4.modules[name]
+                raise
+    return pf if pf.DATA is not None else None
+
+
+try:
+    _PF = _load_postflop()
+except BaseException:         # noqa: BLE001 - no engine: the hand-class path
+    _PF = None
 
 
 # ===================================== variant seam: swapped tables, any hole-card count =====================
@@ -1436,6 +1508,10 @@ class Brain:
         n = v.n
         ver = self.version
         h = v.hole
+        if P["POSTFLOP_ENGINE"] and _PF is not None and _POST is None and len(h) == 2 and v.boards is None:
+            d = self.postflop_engine(v)
+            if d is not None:
+                return d
         if _POST is not None:
             cls = post_class_variant(h, v.board, v.boards, v.street)    # the active variant's ranking and rule
         elif len(h) == 2 and v.boards is None:
@@ -1495,6 +1571,97 @@ class Brain:
         if ec == 1 and not raised_me and to_call <= P["CALL1_MAX_POT"] * pot and not big:
             return ("call",)
         return ("fold",)
+
+    def postflop_engine(self, v):
+        """POSTFLOP_ENGINE (POSTFLOP_ENGINE notes): bet / check / call / raise / fold from equity against an
+        action-conditioned range (bot/postflop.py lookups). Widths come from the typing labels (v2; medium in v0/v1
+        and for unknown seats), fold rates from each seat's observed postflop folds (v2). E09 (the minimum into a
+        typed folder) and VALUE_FRAC_CALLER are kept. Returns None when there is nothing to decide here."""
+        P = self.P
+        cfg = getattr(self, "_pe_cfg", None)
+        if cfg is None:
+            cfg = dict(PARAMS["PE"])
+            cfg.update(P["PE"] or {})
+            cfg["VALUE_FRAC_CALLER"] = P["VALUE_FRAC_CALLER"]
+            cfg["VALUE_FRAC"] = P["VALUE_FRAC"]
+            cfg["RAISE_MULT"] = P["RAISE_MULT"]
+            cfg["BF_RAISE_MAX"] = P["BF_RAISE3_MAX"]
+            self._pe_cfg = cfg
+        me = v.me
+        bets = v.bets
+        to_call = v.to_call
+        in_hand = v.in_hand
+        all_in = v.all_in
+        seats = [j for j in range(v.n) if j != me and in_hand[j]]
+        if not seats:
+            return None
+        ver = self.version
+        tr = self.tr
+        cur = max(bets)
+        flop = v.street == 1
+        typed = ver >= 2
+        width_of = _PF.WIDTH_OF_TYPE
+        style_of = _PF.BET_STYLE_OF_TYPE
+        mo, ft = cfg["BLUFF_MIN_OBS"], cfg["BLUFF_FOLD_T"]
+        opps = []
+        caller_vs = False
+        active = 0
+        for j in seats:
+            ai = bool(all_in[j])
+            if typed:
+                t = self.seat_type(j)
+                w = width_of.get(t, 1)
+                sty = style_of.get(t, 1)
+                if t == "caller":
+                    caller_vs = True
+            else:
+                w = sty = 1
+            if typed and not ai:
+                st = self.stats[j]
+                fh, fn = st.post_fold, st.post_faced
+                ok = fn >= mo and self.shrunk(fh, fn, "flop_fold") >= ft
+            else:
+                fh = fn = 0
+                ok = False
+            if not ai:
+                active += 1
+            opps.append((j, w, fh, fn, ai or (cur > 0 and bets[j] >= cur), ok, flop and tr.pf_aggr == j, ai, sty))
+        if to_call <= 0:
+            if active == 0:
+                return ("check",)
+            if typed and len(seats) == 1 and self.is_folder(seats[0]):
+                return ("raise", v.min_to)                                # E09: bet the minimum into a folder
+            bettor = -1
+            b = 1.0
+            pot = v.pot
+        else:
+            bettor = max(seats, key=lambda j: bets[j])
+            stack = v.stacks[me]
+            big = to_call >= P["BIG_CALL_FRAC"] * stack
+            b = self.bf(me, bettor) if (self.icm_on and big) else 1.0
+            pot = v.pot
+            if v.bounty is not None and "post" in P["BOUNTY_PARTS"]:
+                pot = bounty_pot(v, pot)
+        last = True                                # nobody still to act after us on this street?
+        if to_call <= 0:
+            ss = v.street_starts
+            acted = set()
+            if v.street < len(ss):
+                for e in v.history[ss[v.street]:]:
+                    acted.add(e[0])
+            for o in opps:
+                if not o[7] and o[0] not in acted:
+                    last = False
+                    break
+        h = v.hole
+        d = _PF.decide(h[0], h[1], v.board, pot, to_call, v.stacks[me], opps, bettor, bets[me] > 0, b, caller_vs,
+                       cur, v.bb, last, cfg, self.rng)
+        if d is None:
+            return None
+        k = d[0]
+        if k == "bet" or k == "raise":
+            return self.bet(v, d[1])
+        return d
 
     def bet(self, v, to):
         """Bet or raise to `to` (street total); all-in if it would commit COMMIT_FRAC of our chips."""
