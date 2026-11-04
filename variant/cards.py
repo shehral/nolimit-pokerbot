@@ -239,3 +239,50 @@ def best_of_five(ev5):
             return ev5(list(cards))
         return max(ev5(list(c)) for c in combinations(cards, 5))
     return evaluate
+
+
+# ---------------------------------------------------------------- straight sets (postflop classifier, ranking probe)
+def straights_of(table):
+    """The 5-rank masks a straight table recognizes as straights (each straight exactly, no extra ranks)."""
+    return tuple(sorted(m for m in range(8192) if POP[m] == 5 and table[m] >= 0))
+
+
+def straight_height(mask, ranks_present):
+    """Height of a 5-rank straight: its top rank, except a wheel (ace + the lowest ranks of the deck) whose height is
+    its highest non-ace rank (A2345 = 3, the 5; short deck A6789 = 7, the 9)."""
+    lo = min(ranks_present) if ranks_present else 0
+    if mask >> 12 & 1 and mask >> lo & 1 and lo != 12:
+        return max(r for r in range(12) if mask >> r & 1)
+    return max(r for r in range(13) if mask >> r & 1)
+
+
+def straight_table_from(straights, ranks_present=None):
+    """Straight table (13-bit rank mask -> height of the best straight inside it, -1 if none) for any set of 5-rank
+    straight masks. Reuses STRAIGHT / STRAIGHT_SHORT when the set is one of theirs (no 8,192-entry rebuild)."""
+    s = tuple(sorted(straights))
+    if s == STRAIGHTS_52:
+        return STRAIGHT
+    if s == STRAIGHTS_SHORT:
+        return STRAIGHT_SHORT
+    rp = ranks_present if ranks_present is not None else [r for r in range(13) if any(m >> r & 1 for m in s)]
+    hs = [(m, straight_height(m, rp)) for m in s]
+    t = [-1] * 8192
+    for m in range(8192):
+        h = -1
+        for sm, sh in hs:
+            if m & sm == sm and sh > h:
+                h = sh
+        t[m] = h
+    return t
+
+
+STRAIGHTS_52 = straights_of(STRAIGHT)                 # 10 straights: A2345 .. TJQKA
+STRAIGHTS_SHORT = straights_of(STRAIGHT_SHORT)        # 6 straights: A6789, 6789T .. TJQKA
+
+
+def ranking_order(flush_over_full_house=False, trips_over_straight=False):
+    """Category order (worst to best, standard ids) for make_ranked from the two flips real variants use."""
+    o = [HIGH, PAIR, TWO_PAIR]
+    o += [STRAIGHT_C, TRIPS] if trips_over_straight else [TRIPS, STRAIGHT_C]
+    o += [FULL_HOUSE, FLUSH] if flush_over_full_house else [FLUSH, FULL_HOUSE]
+    return tuple(o + [QUADS, STRAIGHT_FLUSH])

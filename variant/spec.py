@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Callable, Optional, Tuple
 
-from .cards import (STD_RANKS, STD_SUITS, Codec, evaluate52, evaluate_short, evaluate_upto9)
+from .cards import (STD_RANKS, STD_SUITS, STRAIGHT_SHORT as STRAIGHT_SHORT_T, STRAIGHTS_52, STRAIGHTS_SHORT, Codec, evaluate52,
+                    evaluate_short, evaluate_upto9, make_ranked, ranking_order, straight_table_from)
 
 REQUEST_KINDS = ("discard", "keep", "toss", "assign", "bid", "redraw", "other")
 # response formats a request can expect (the adapter converts the kit's request into one of these)
@@ -208,7 +209,8 @@ class VariantSpec:
                 "discards_public": self.discards_public, "board_schedule": list(self.board_schedule),
                 "n_boards": self.n_boards, "must_use": list(self.must_use) if self.must_use else None,
                 "hi_lo": self.hi_lo, "ante_bb": self.ante_bb, "bounty": dict(self.bounty) if self.bounty else None,
-                "custom_keep_score": self.keep_score is not None}
+                "custom_keep_score": self.keep_score is not None,
+                "ranking": probe_ranking(self.evaluator, self.deck, self.codec.slot)}
 
     # ------------------------------------------------------------------ hands
     def hand_value(self, hole, board):
@@ -420,6 +422,91 @@ def probe_evaluator(spec, n_calls=2000, seed=7, n_seats=8, exact_hands=40):
     return rep
 
 
+def _hand(ranks, suits_of, slot):
+    """Cards for ranks (one card each) with suits taken in turn from suits_of[rank] (a list), or None."""
+    used = {}
+    out = []
+    for r in ranks:
+        i = used.get(r, 0)
+        ss = suits_of.get(r, ())
+        if i >= len(ss):
+            return None
+        out.append(r * slot + ss[i])
+        used[r] = i + 1
+    return out
+
+
+def probe_ranking(evaluator, deck, slot=4):
+    """The hand ranking an evaluator implements on a deck, as literals the bot can rebuild (never raises; None when
+    the deck is too small or the evaluator does not rank by categories):
+      straights               sorted 13-bit masks of the 5 ranks every straight uses (A6789 in a short deck)
+      flush_over_full_house   the weakest flush beats the strongest full house (short deck)
+      trips_over_straight     the weakest trips beat the strongest straight (Triton short deck)
+    Straights: every 5-distinct-rank off-suit hand that beats the lowest pair (about 1,300 calls, a few ms).
+    Kit numbering only (13 ranks max; c = rank * slot + suit)."""
+    try:
+        suits_of = {}
+        for c in deck:
+            suits_of.setdefault(c // slot, []).append(c % slot)
+        R = sorted(suits_of)
+        if len(R) < 6 or len(R) > 13 or min(len(v) for v in suits_of.values()) < 3:
+            return None
+        ev = evaluator
+        low_pair = _hand([R[0], R[0], R[1], R[2], R[3]], suits_of, slot)
+        vp = ev(low_pair)
+        straights = []
+        for rs in combinations(R, 5):
+            h = []
+            for i, r in enumerate(rs):              # off-suit: alternate the first two suits of each rank
+                h.append(r * slot + suits_of[r][i % 2])
+            if ev(h) > vp:
+                straights.append(sum(1 << r for r in rs))
+        if not straights:
+            return None
+        st = set(straights)
+        # suits with at least 5 ranks (flush exemplars), all in kit numbering
+        by_suit = {}
+        for c in deck:
+            by_suit.setdefault(c % slot, []).append(c // slot)
+        fsuit = next((s for s, rs in sorted(by_suit.items()) if len(rs) >= 5), None)
+        flush_over_fh = False
+        if fsuit is not None:
+            rs = sorted(by_suit[fsuit])
+            weak = None
+            for cmb in combinations(rs, 5):         # the lowest non-straight flush
+                if sum(1 << r for r in cmb) not in st:
+                    weak = [r * slot + fsuit for r in cmb]
+                    break
+            strong_fh = _hand([R[-1]] * 3 + [R[-2]] * 2, suits_of, slot)
+            if weak is not None and strong_fh is not None:
+                flush_over_fh = ev(weak) > ev(strong_fh)
+        weak_trips = _hand([R[0]] * 3 + [R[1], R[2]], suits_of, slot)
+        top = max(st, key=lambda m: (max(r for r in range(13) if m >> r & 1), m))
+        top_ranks = [r for r in range(13) if top >> r & 1]
+        strong_st = [r * slot + suits_of[r][i % 2] for i, r in enumerate(top_ranks)]
+        trips_over_st = ev(weak_trips) > ev(strong_st) if weak_trips is not None else False
+        return {"straights": sorted(straights), "flush_over_full_house": bool(flush_over_fh),
+                "trips_over_straight": bool(trips_over_st)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def evaluator_from_ranking(rk):
+    """A make_ranked evaluator (exact for 5..9 cards) for a probe_ranking dict."""
+    ranks = sorted({r for m in rk["straights"] for r in range(13) if m >> r & 1})
+    table = straight_table_from(tuple(rk["straights"]), ranks)
+    order = ranking_order(bool(rk.get("flush_over_full_house")), bool(rk.get("trips_over_straight")))
+    if table is STRAIGHT_SHORT_T and order == ranking_order(True):
+        return evaluate_short
+    return make_ranked(table, order)
+
+
+def is_standard_ranking(rk):
+    """True for the 52-card hold'em ranking (or no information)."""
+    return (not rk) or (tuple(rk.get("straights") or ()) == STRAIGHTS_52 and not rk.get("flush_over_full_house")
+                        and not rk.get("trips_over_straight"))
+
+
 def spec_from_kit(evaluator, name="kit", hole_dealt=2, hole_kept=None, keep_street=0, discard_to="muck",
                   discards_public=False, board=(3, 1, 1), n_boards=1, removed_ranks="", removed_suits="",
                   removed_cards=(), rank_chars=STD_RANKS, suit_chars=STD_SUITS, must_use=None, hi_lo=False,
@@ -476,13 +563,21 @@ def toss_spec():
 
 
 def spec_from_params(p):
-    """Rebuild a VariantSpec from SPEC_PARAMS (VariantSpec.spec_params) for class lookups (HandSpace). The evaluator
-    is a stand-in chosen by the deck (short deck -> evaluate_short, discards to the board -> evaluate_upto9, else
-    evaluate52): the bot never evaluates showdowns through it."""
+    """Rebuild a VariantSpec from SPEC_PARAMS (VariantSpec.spec_params) for class lookups (HandSpace) and the
+    postflop classifier (bridge.postflop_classifier). The evaluator is a stand-in with the game's RANKING: from the
+    probed "ranking" entry when the tables carry one (make_ranked with its straights and category flips), else chosen
+    by the deck (short deck -> evaluate_short, discards to the board -> evaluate_upto9, else evaluate52). The bot
+    never evaluates showdowns through it; the postflop classifier reads its ranking back with probe_ranking."""
     p = dict(p or {})
     rr = p.get("removed_ranks", "") or ""
     ev = evaluate_short if set("2345") <= set(rr) else (
         evaluate_upto9 if p.get("discard_to") == "board" else evaluate52)
+    rk = p.get("ranking")
+    if rk and not is_standard_ranking(rk):     # the standard ranking keeps the deck guess (unchanged lookups)
+        try:
+            ev = evaluator_from_ranking(rk)
+        except Exception:  # noqa: BLE001 - a malformed entry keeps the deck guess
+            pass
     mu = p.get("must_use")
     return VariantSpec(name=p.get("name", "tables"), rank_chars=p.get("rank_chars", STD_RANKS),
                        suit_chars=p.get("suit_chars", STD_SUITS), removed_ranks=rr,

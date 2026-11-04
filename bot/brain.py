@@ -399,7 +399,25 @@ if _ACTIVE is not None and _ACTIVE.kind == "variant":
         _G0, _GN = EQ_GRID[0], EQ_GRID[-1]
         _SEAM = None
         TABLES_INFO = "tables: built-in NLHE (swap failed)"
-_MEDIAN_CLS = min(range(len(PUSH_PCT)), key=lambda i: (abs(PUSH_PCT[i] - 0.5), i))
+# Variant-aware postflop class (POSTFLOP_VARIANT notes). _POST is None with the built-in tables and with swapped
+# tables of a plain hold'em spec (52-card ranking, 2 hole cards, no keep or must-use rule): postflop() then runs the
+# pre-integration hand_class lines. Otherwise variant/bridge.postflop_classifier(spec): the variant's straights (short
+# deck A-6-7-8-9), its hand rule (must use k of the hole cards, the best keepable subset) and its street count, on
+# hand_class's 0..3 scale. NOLIMIT_POSTFLOP_VARIANT=0 switches it off (A/B, event-day rollback).
+_POST = None
+POST_INFO = "postflop: hand_class (52-card hold'em)"
+if _SEAM is not None:
+    try:
+        import os as _os3
+        if _os3.environ.get("NOLIMIT_POSTFLOP_VARIANT", "1").strip() not in ("0", "off", "no", "false"):
+            _POST = TABLES_LOADER._submodule("bridge").postflop_classifier(_ACTIVE.spec)
+            if _POST is not None:
+                POST_INFO = "postflop: " + _POST.describe
+        else:
+            POST_INFO = "postflop: hand_class (NOLIMIT_POSTFLOP_VARIANT off)"
+    except BaseException:     # noqa: BLE001 - no classifier: hand_class, as before
+        _POST = None
+_MEDIAN_CLS =min(range(len(PUSH_PCT)), key=lambda i: (abs(PUSH_PCT[i] - 0.5), i))
 
 
 def classify(hole):
@@ -470,6 +488,21 @@ def post_class(hole, board, boards=None):
         return hand_class(hole[0], hole[1], board)
     except Exception:         # noqa: BLE001
         return 0
+
+
+def post_class_variant(hole, board, boards=None, street=None):
+    """Postflop class 0..3 with the active variant's classifier _POST (any hole count, the variant's ranking and hand
+    rule); several boards: the floor of the mean class, as post_class. Falls back to post_class on any failure."""
+    try:
+        f = _POST
+        if boards:
+            tot = 0
+            for b in boards:
+                tot += f(hole, b, street)
+            return tot // len(boards)
+        return f(hole, board, street)
+    except Exception:         # noqa: BLE001
+        return post_class(hole, board, boards)
 
 
 def keep_policy(view):
@@ -1403,7 +1436,9 @@ class Brain:
         n = v.n
         ver = self.version
         h = v.hole
-        if len(h) == 2 and v.boards is None:
+        if _POST is not None:
+            cls = post_class_variant(h, v.board, v.boards, v.street)    # the active variant's ranking and rule
+        elif len(h) == 2 and v.boards is None:
             cls = hand_class(h[0], h[1], v.board)      # the pre-integration path (NLHE byte identity)
         else:
             cls = post_class(h, v.board, v.boards)     # 3+ cards or several boards; never raises
