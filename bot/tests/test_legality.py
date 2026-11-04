@@ -146,7 +146,14 @@ def test_heads_up_button_posts_small_blind_and_acts_first(version):
     seen, _ = play([400, 400], {1: [F]}, button=0, me=0, holes={0: ("Ks", "Kh")}, version=version)
     st, a = seen[0]
     assert st["sb_seat"] == 0 and st["bb_seat"] == 1 and st["to_call"] == 10
-    assert a["action"] == "raise" and a["amount"] == st["max_raise_to"]      # 20 bb deep: KK jams
+    # 20 bb deep, KK raises. TOP3 pays places, so the 2026-11-03 payout tuning applies (PF_DEPTH_BB 12): a 2.5 bb
+    # open; under winner-take-all PF_DEPTH_BB stays 20 and KK jams
+    tuned = SHELL.brain.PARAMS["TUNE_BY_PAYOUT"]
+    assert a["action"] == "raise" and a["amount"] == (2.5 * st["bb"] if tuned else st["max_raise_to"])
+    seen, _ = play([400, 400], {1: [F]}, button=0, me=0, holes={0: ("Ks", "Kh")}, version=version, payouts="WTA")
+    st, a = seen[0]
+    assert st["sb_seat"] == 0 and st["to_call"] == 10
+    assert a["action"] == "raise" and a["amount"] == st["max_raise_to"]
 
 
 @pytest.mark.parametrize("version", [0, 1, 2])

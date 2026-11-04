@@ -11,6 +11,9 @@ from variant.spec import VariantSpec, nlhe_spec
 
 
 class FixedBoard(random.Random):
+    def __new__(cls, *a, **k):        # Python < 3.11: Random.__new__ would seed from the boards list (unhashable)
+        return super().__new__(cls)
+
     def __init__(self, boards):
         super().__init__(0)
         self.boards = list(boards)

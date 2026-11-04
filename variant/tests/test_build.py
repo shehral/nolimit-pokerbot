@@ -14,12 +14,12 @@ from bot import brain
 from variant.build_tables import build_tables, load_tables
 from variant.spec import nlhe_spec, short_deck_spec
 
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "test")
-WORKERS = 8
+WORKERS = 8      # outputs go to pytest's tmp_path (audit 2, 2026-11-04): the committed copies under variant/out/test/
+                 # are reference fixtures and used to be rewritten, and shown as modified, by every test run
 
 
-def test_sixty_seconds_nlhe_matches_bot_tables():
-    path = os.path.join(OUT, "tables_nlhe_60s.py")
+def test_sixty_seconds_nlhe_matches_bot_tables(tmp_path):
+    path = str(tmp_path / "tables_nlhe_60s.py")
     t0 = time.time()
     res = build_tables(nlhe_spec(), workers=WORKERS, time_budget=60, out_path=path,
                        range_order=T.PUSH_ORDER.split(), log=lambda m: None)
@@ -47,8 +47,8 @@ def test_sixty_seconds_nlhe_matches_bot_tables():
     print(f"max cell diff {worst:.4f}, wall {wall:.1f} s, stages {m.META['stage_s']}, boards {m.META['boards']}")
 
 
-def test_budget_respected_and_checkpoints():
-    path = os.path.join(OUT, "tables_short_ckpt.py")
+def test_budget_respected_and_checkpoints(tmp_path):
+    path = str(tmp_path / "tables_short_ckpt.py")
     if os.path.exists(path):
         os.remove(path)
     seen = []
@@ -85,8 +85,8 @@ def test_budget_respected_and_checkpoints():
     assert res["sanity"]["ok"]
 
 
-def test_tiny_budget_still_ships():
-    path = os.path.join(OUT, "tables_nlhe_tiny.py")
+def test_tiny_budget_still_ships(tmp_path):
+    path = str(tmp_path / "tables_nlhe_tiny.py")
     t0 = time.time()
     res = build_tables(nlhe_spec(), workers=2, time_budget=2.5, out_path=path, log=lambda m: None)
     assert time.time() - t0 <= 2.5 + 1.0

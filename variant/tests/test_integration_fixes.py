@@ -13,8 +13,6 @@ from variant.cards import STD_CODEC as C
 from variant.handspace import HandSpace
 from variant.spec import VariantSpec, nlhe_spec, probe_evaluator, spec_from_params, toss_spec
 
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
-
 
 def _ints(s):
     return C.ints(s.split())
@@ -77,8 +75,8 @@ def test_gate_on_stderr():
     assert not gate_tables(T)[0]
 
 
-def test_checkpoints_every_few_seconds_inside_stages():
-    path = os.path.join(OUT, "tables_nlhe_ckpt5.py")
+def test_checkpoints_every_few_seconds_inside_stages(tmp_path):
+    path = str(tmp_path / "tables_nlhe_ckpt5.py")   # audit 2: not the tracked variant/out/tables_nlhe_ckpt5.py
     writes = []
     orig = BT.write_module
 

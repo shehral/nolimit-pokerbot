@@ -63,7 +63,9 @@ PARAMS = {
     "JAM_OPP_EXP": 2.0,           # gated jam side (every possible caller observed jam-tight): * mean BF(caller, me)**this
     "JAM_HERO_EXP_GATED": -1.5,   # ... * mean BF(me, caller) ** this (the tested formula)
     # ---- latency
-    "GUARD_NS": 250_000,          # own-clock budget per decision (ns); optional work (BFs) must fit inside it
+    "GUARD_NS": 200_000,          # own-clock budget per decision (ns); optional work (BFs) must fit inside it
+    #                               (250,000 until the 2026-11-03 hardening: the BF start limit GUARD - 3 x cost left
+    #                               worst decisions at 230-380 us of CPU; 200,000 bounds them under 200 us, A/B 0)
     "BF_COST_SAFETY": 3.0,        # a BF starts only if elapsed + this x the BF cost measured at start-up < GUARD_NS
     # ---- chip-EV Nash fits (sng_icm fit_rules.json; refit these for antes or a card variant)
     "JAM_FIT": (3.29, -0.717, -0.917, 1.41, -0.41),   # jam% = a S^b k^c for k >= 2 callers; a1 S^b1 for k = 1
@@ -77,6 +79,13 @@ PARAMS = {
     "OPEN_LIMPER_BB": 1.0,
     "LATE_SEATS": 3,              # a first-in raise with at most this many players behind is a late (steal) open
     "JAM_MULT": 1.0,              # x every first-in jam range
+    "TUNE_BY_PAYOUT": True,       # at construction: when the payout pays two or more places (not winner-take-all),
+                                  # apply TUNE_MULTI on top of PARAMS; explicit params / config["bot_params"] keys win.
+                                  # ON 2026-11-03 (TUNING_LOG notes, seed 202, 10,000 paired tables, TOP3): AI_ONLY
+                                  # +0.040, STRONG +0.058, T6_like +0.036, T1_like +0.055, AI_MIX +0.023 [-0.003, +0.048]
+    "TUNE_MULTI": {"PF_DEPTH_BB": 12.0, "JAM_MULT": 1.15},   # B5 + AI-field confirmed under TOP3 / LINEAR; loses under
+                                  # winner-take-all, where it is not applied (REPORT notes B5); JAM_MULT 1.3 screened
+                                  # worse than 1.15 (AI_MIX -0.014)
     "CALL_MODEL": "equity",       # "equity" (default) or "fit" (tested call_pct(J, S) with S vs the jammer)
     "CALL_EQ_ADJ": 0.0,           # added to the required equity of every all-in call (+ = tighter)
     "CALL_BEHIND_MARGIN": 0.02,   # required equity + this per opponent who can still act after us (overcall risk)
@@ -98,7 +107,11 @@ PARAMS = {
     "VALUE_FRAC": 0.70,           # value bet (class >= 2), pot fraction
     "RAISE_MULT": 3.0,            # class 3 facing a bet: raise to this x the bet
     "BIG_CALL_FRAC": 0.4,         # a call is "big" when it costs >= this share of my chips behind
-    "CALL2_MAX_POT": 1.0,         # class 2 calls a bet up to this x pot (not big, or BF below BF_CALL2_MAX)
+    "CALL2_MAX_POT": 1.0,         # class 2 calls a bet up to this x pot (not big, or BF below BF_CALL2_MAX); the
+                                  # pot here already includes the bet, so 1.0 never binds
+    "CALL2_MAX_BET_POT": None,    # None = off; else class 2 facing a first bet also needs to_call <= this x the pot
+                                  # BEFORE this street's bets (bet-to-pot ratio: 1.0 = a pot-size bet). Left off
+                                  # 2026-11-03: 0.75 / 1.0 / 1.5 all within +-0.01 of v2 in every field (TUNING_LOG)
     "CALL1_MAX_POT": 0.35,        # class 1 calls a bet up to this x pot (never big)
     "RAISED_CALL2_MAX_POT": 0.35,  # class 2 facing a RAISE of our bet: call only this cheap (raises are honest)
     "BF_CALL2_MAX": 1.3,          # v1+: big class-2 call only if BF < this
@@ -120,6 +133,11 @@ PARAMS = {
     "OE_TIGHT": 0.6, "MIN_JAMS_FACED_TIGHT": 4,       # jam-tight: shrunk calls/expected-Nash-calls <= this
     "FOLDER_STEAL": True,         # min-raise any two when every seat behind is a folder (E09)
     "LIGHT_JAM_CAP": 0.35,        # max jam range with a caller, loose or maniac seat behind (E05)
+    "CALLER_CAP_JAM_EVIDENCE": True,    # True: a "caller" seat caps first-in jams only if it was typed from jam calls
+                                  # (shrunk jam-call rate >= T_CALLER_CALLJAM over >= MIN_JAMS_FACED) or would also
+                                  # be "loose"; a caller typed from postflop calls alone no longer caps. ON 2026-11-03
+                                  # (TUNING_LOG, seed 202): STRONG +0.009, T6_like +0.013, T1_like +0.009, AI_ONLY
+                                  # +0.027, AI_MIX +0.011 [-0.007, +0.030]; False = the built v2 rule
     "SB_WIDEN": 1.6,              # x jam range when the only seat behind is a folder or folds to jams (P1)
     "SB_WIDEN_MARGIN": 0.05,      # widen only if the BB's shrunk jam-call rate < break-even(S) - this
     "SB_WIDEN_BE": (0.33, 0.018, 0.10),   # break-even jam-call rate of the widen: 0.33 at <= 10 bb, minus 0.018 per bb
@@ -533,6 +551,14 @@ def bounty_pot(v, pot):
     return pot + bounty_bonus(v)
 
 
+def pot_before_street(v):
+    """The pot before this street's bets (the base of a bet-to-pot ratio). The kit's pot includes the street's bets
+    (pot == sum(contributed)); a platform whose pot leaves them out already reports the base. Floored at 1 bb."""
+    pot, sb = v.pot, sum(v.bets)
+    base = pot - sb if pot >= sum(v.contrib) else pot
+    return base if base > v.bb else v.bb
+
+
 # ===================================== ICM (exact Malmuth-Harville; padded payouts) =====================
 def pad_payouts(pays, n=8):
     p = [float(x) for x in (pays or ())]
@@ -547,7 +573,9 @@ def is_wta(pays):
 
 
 def icm_hero(stacks, i, pays):
-    """Closed form, EXACT when places 4..n are affine in place (WTA, top-3, linear, ...); pays padded."""
+    """Closed form, EXACT when places 4..n are affine in place (WTA, top-3, linear, ...); pays padded.
+    Hardening 2026-11-03: the double loop runs over a pre-filtered list of the live others (same terms, same order,
+    same arithmetic: bit-identical results, checked on 359k random spots; about 17% faster)."""
     live = [s for s in stacks if s > 0]
     k, si = len(live), stacks[i]
     if si <= 0 or k == 0:
@@ -567,19 +595,16 @@ def icm_hero(stacks, i, pays):
         return lin
     T = float(sum(live))
     e2 = e3 = 0.0
-    n = len(stacks)
-    for j in range(n):
-        sj = stacks[j]
-        if j == i or sj <= 0:
-            continue
+    vals = [sj for j, sj in enumerate(stacks) if j != i and sj > 0]
+    for a, sj in enumerate(vals):
         Tj = T - sj
         pj = sj / T
         e2 += pj * si / Tj
         if c2:
-            for m in range(n):
-                sm = stacks[m]
-                if m != i and m != j and sm > 0:
-                    e3 += pj * (sm / Tj) * si / (Tj - sm)
+            for sm in vals[:a]:
+                e3 += pj * (sm / Tj) * si / (Tj - sm)
+            for sm in vals[a + 1:]:
+                e3 += pj * (sm / Tj) * si / (Tj - sm)
     return lin + c0 * (si / T) + c1 * e2 + c2 * e3
 
 
@@ -600,20 +625,25 @@ def make_icm_exact(pays, max_players=10):
                 sign = -sign
             row.append(acc)
         coef.append(row)
+    # weights[m][q] = coef[m][size of subset q] in the enumeration order below (hardening 2026-11-03: built once
+    # instead of per call; same terms, same order, bit-identical results on 377k random spots, about 17% faster)
+    weights = []
+    sizes = [0]
+    for m in range(max_players):
+        weights.append([coef[m][b] for b in sizes])
+        sizes = sizes + [b + 1 for b in sizes]
 
     def icm(stacks, i):
         si = stacks[i]
         if si <= 0:
             return 0.0
-        sums, sizes = [0.0], [0]
+        sums = [0.0]
         for j, s in enumerate(stacks):
             if j != i and s > 0:
                 sums += [x + s for x in sums]
-                sizes += [b + 1 for b in sizes]
-        row = coef[len(sizes).bit_length() - 1]
         ev = 0.0
-        for x, b in zip(sums, sizes):
-            ev += row[b] * si / (si + x)
+        for w, x in zip(weights[len(sums).bit_length() - 1], sums):
+            ev += w * si / (si + x)
         return ev
     return icm
 
@@ -627,8 +657,9 @@ def make_icm(pays):
     return make_icm_exact(pays, max(10, len(pays)))
 
 
-def bubble_factor(icm, stacks, i, j, pays, lo=0.5, hi=6.0, no_gain=4.0):
-    """ICM loss / ICM gain for seat i in an all-in of min(s_i, s_j) against seat j (start-of-hand stacks)."""
+def bubble_factor(icm, stacks, i, j, pays, lo=0.5, hi=6.0, no_gain=4.0, now=None):
+    """ICM loss / ICM gain for seat i in an all-in of min(s_i, s_j) against seat j (start-of-hand stacks).
+    now: icm(stacks, i) if the caller already has it (Brain.bf caches it per hand and seat: the same float)."""
     a = min(stacks[i], stacks[j])
     if a <= 0:
         return 1.0
@@ -636,7 +667,8 @@ def bubble_factor(icm, stacks, i, j, pays, lo=0.5, hi=6.0, no_gain=4.0):
     for s in stacks:
         if s > 0:
             k += 1
-    now = icm(stacks, i)
+    if now is None:
+        now = icm(stacks, i)
     win = list(stacks)
     win[i] += a
     win[j] -= a
@@ -915,7 +947,6 @@ class Brain:
             params = config["bot_params"]          # rehearsal A/B hook (runner extra_config); absent on the platform
         if params:
             P.update(params)
-        self.P = P
         if version is None:
             version = config.get("bot_version", P["VERSION"])
         self.version = int(version)
@@ -923,6 +954,13 @@ class Brain:
         n = int(config.get("n_seats", 8) or 8)
         self.n = n
         self.pays = pad_payouts(config.get("payouts"), max(8, n))
+        self.tuned = {}           # PARAMS keys set by TUNE_BY_PAYOUT for this payout (diagnostic)
+        if P["TUNE_BY_PAYOUT"] and not is_wta(self.pays):
+            for k, val in (P["TUNE_MULTI"] or {}).items():
+                if not (params and k in params):    # an explicit override still wins
+                    P[k] = val
+                    self.tuned[k] = val
+        self.P = P
         icm_on = P["ICM_ON"]
         if icm_on is None:
             icm_on = not is_wta(self.pays)
@@ -940,6 +978,7 @@ class Brain:
         self.stats = [SeatStat() for _ in range(n)]
         self.tr = HandTracker(P, self.stats, n)
         self.bf_cache = {}
+        self.icm_now = {}         # seat -> icm(start stacks, seat) for this hand (bf() reuses it across opponents)
         self.bf_hand = None
         self.bf_budget = 0
         self.t0 = 0
@@ -986,8 +1025,13 @@ class Brain:
         if self.bf_budget > 0 and time.perf_counter_ns() - self.t0 < self.bf_start_limit:
             self.bf_budget -= 1
             try:
-                v = bubble_factor(self.icm, self.view_start, i, j, self.pays, self.P["BF_MIN"], self.P["BF_MAX"],
-                                  self.P["BF_NO_GAIN"])
+                st = self.view_start
+                now = self.icm_now.get(i)          # seat i's ICM at this hand's start stacks: one call per hand
+                if now is None and st[i] > 0 and min(st[i], st[j]) > 0:
+                    now = self.icm(st, i)
+                    self.icm_now[i] = now
+                v = bubble_factor(self.icm, st, i, j, self.pays, self.P["BF_MIN"], self.P["BF_MAX"],
+                                  self.P["BF_NO_GAIN"], now)
                 self.bf_computed += 1
             except Exception:
                 v = None
@@ -1099,6 +1143,7 @@ class Brain:
         if self.bf_hand != v.hand_no:
             self.bf_hand = v.hand_no
             self.bf_cache = {}
+            self.icm_now = {}
         self.types = {}
         self.view_start = v.start
         nl = 0
@@ -1242,7 +1287,12 @@ class Brain:
         seats behind)."""
         P = self.P
         types = [self.seat_type(j) for j in callers]
-        if any(t in ("caller", "loose", "maniac") for t in types):
+        if P["CALLER_CAP_JAM_EVIDENCE"]:
+            capped = any(t in ("loose", "maniac") or (t == "caller" and self.caps_as_caller(j))
+                         for j, t in zip(callers, types))
+        else:
+            capped = any(t in ("caller", "loose", "maniac") for t in types)
+        if capped:
             return min(J, P["LIGHT_JAM_CAP"])
         mult = 1.0
         if len(callers) == 1:
@@ -1258,6 +1308,16 @@ class Brain:
             mult = max(mult, P["JAMFOLD_WIDEN"])
         J *= mult
         return J if J < 1.0 else 1.0
+
+    def caps_as_caller(self, j):
+        """CALLER_CAP_JAM_EVIDENCE: does a typed caller cap our jams? Only on jam-call evidence, or if its voluntary
+        rate alone would have typed it loose (the caller branch comes first in seat_type)."""
+        P = self.P
+        st = self.stats[j]
+        if st.jam_faced >= P["MIN_JAMS_FACED"] and \
+                self.shrunk(st.jam_called, st.jam_faced, "calljam") >= P["T_CALLER_CALLJAM"]:
+            return True
+        return self.shrunk(st.pf_vol, st.pf_dec, "vol") >= P["T_LOOSE_VOL"]
 
     def open_range(self, r, v):
         """v2: estimated range of the raiser facing us (non-all-in): a first-in open gets the open prior by its
@@ -1393,7 +1453,9 @@ class Brain:
                     return ("call",)
                 return ("fold",)
             if to_call <= P["CALL2_MAX_POT"] * pot and (not big or b < P["BF_CALL2_MAX"]):
-                return ("call",)
+                mb = P["CALL2_MAX_BET_POT"]
+                if mb is None or to_call <= mb * pot_before_street(v):
+                    return ("call",)
             return ("fold",)
         if ec == 1 and not raised_me and to_call <= P["CALL1_MAX_POT"] * pot and not big:
             return ("call",)

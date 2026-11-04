@@ -36,7 +36,9 @@ def test_p15_exception_in_optional_work_returns_the_v0_decision(monkeypatch):
         bot._brain.icm_jam = boom
         made.append(bot)
         return bot
-    for spot in (eight_first_in(1, 10), eight_first_in(4, 14)):
+    # both spots inside the jam/fold zone under every payout (PF_DEPTH_BB is 12 when TUNE_BY_PAYOUT applies;
+    # the 14 bb spot used before the 2026-11-03 tuning is now an open-raise spot that never reaches typed_jam)
+    for spot in (eight_first_in(1, 10), eight_first_in(4, 11)):
         d0 = run_spot(spot, 0, labels=LABELS)
         made.clear()
         db = run_spot(spot, 2, labels=LABELS, factory=broken)

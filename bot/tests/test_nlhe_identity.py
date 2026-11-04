@@ -30,7 +30,11 @@ def record(n=N_DECISIONS):
     from bot import shell
 
     rows = []
-    params = {"GUARD_NS": 10 ** 15}          # no clock dependence: every BF is computed exactly
+    params = {"GUARD_NS": 10 ** 15,          # no clock dependence: every BF is computed exactly
+              # the 2026-11-03 tuning switches (TUNING_LOG notes) pinned to the pre-tuning rules, so this test keeps
+              # checking the decision code against the golden recorded at df8e93b (not regenerated); the tuned
+              # defaults are covered by test_tuning.py
+              "TUNE_BY_PAYOUT": False, "CALLER_CAP_JAM_EVIDENCE": False}
 
     def ours(version):
         def make(seat, cfg):
