@@ -9,6 +9,37 @@ integration is a rename: brain.py keeps its logic and takes these values from th
 """
 import bisect
 
+# Gate thresholds for swapping a generated tables module into the bot (verify 2026-11-03: a 90 s toss build had
+# SANITY ok but per-class stderr 0.024 and a different top class than a 300 s build; gate on the error, not only ok)
+MAX_STDERR_A = 0.015          # per-class standard error of equity vs random (stage a), from META["stderr"]["a"]
+
+
+def gate_tables(T, max_stderr=MAX_STDERR_A, require_final=False):
+    """(ok, reasons) for a generated tables module: SANITY ok, the equity stage done, META.stderr["a"] at most
+    max_stderr (a missing stderr fails: the tables are provisional), and optionally a final (not checkpoint) write."""
+    reasons = []
+    san = getattr(T, "SANITY", None) or {}
+    meta = getattr(T, "META", None) or {}
+    if not san.get("ok"):
+        reasons.append(f"SANITY not ok (failed {san.get('failed')})")
+    done = meta.get("stage_done") or {}
+    if not done.get("a"):
+        reasons.append("stage a (equity vs random) not done: tables are a static-score placeholder")
+    se = (meta.get("stderr") or {}).get("a")
+    if se is None:
+        reasons.append("no stderr for stage a")
+    elif se > max_stderr:
+        reasons.append(f"stderr a {se:.4f} > {max_stderr} (build longer: 300-900 s for 3-card or rollout games)")
+    if require_final and not meta.get("final"):
+        reasons.append("checkpoint, not the final write")
+    src = str((getattr(T, "SOURCES", None) or {}).get("EQ_TABLE", ""))
+    if src.startswith("linear model"):
+        reasons.append("EQ_TABLE is the provisional linear model (up to 0.3 off at J = 3%); wait for stage b or m")
+    for name in ("EQ_LABELS", "PUSH_ORDER", "CALL_ORDER", "EQ_GRID", "EQ_TABLE"):
+        if not hasattr(T, name):
+            reasons.append(f"missing {name}")
+    return (not reasons), reasons
+
 
 def brain_names(hs, T):
     """T: a tables module (or any object) with EQ_LABELS, PUSH_ORDER, CALL_ORDER, EQ_GRID, EQ_TABLE and optionally

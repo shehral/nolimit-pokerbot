@@ -181,6 +181,7 @@ def assemble(st, spec):
     return {
         "SPEC_NAME": spec.name,
         "SPEC_SUMMARY": spec.summary(),
+        "SPEC_PARAMS": getattr(st, "spec_params", None) or spec.spec_params(),
         "PUSH_ORDER": " ".join(lab[i] for i in push),
         "CALL_ORDER": " ".join(lab[i] for i in call),
         "EQ_GRID": tuple(float(x) for x in st.grid),
@@ -214,6 +215,8 @@ def write_module(path, tables, sanity, meta):
     lines.append(")")
     for k in ("EQ_RANDOM", "COMBOS", "TOTAL_COMBOS", "JAM_FIT", "CALL_FIT", "SOURCES"):
         lines.append(f"{k} = {tables[k]!r}")
+    if tables.get("SPEC_PARAMS") is not None:        # lets the bot rebuild the HandSpace (bot/tables_loader.py)
+        lines.append(f"SPEC_PARAMS = {json.loads(json.dumps(tables['SPEC_PARAMS']))!r}")
     body = "\n".join(lines) + "\n"
     digest = hashlib.sha256(body.encode()).hexdigest()[:16]
     tail = [f"SANITY = {json.loads(json.dumps(sanity))!r}",
@@ -295,12 +298,15 @@ def _pool(workers, spec, hs, start_method):
     return ctx.Pool(workers, initializer=mc.init_worker, initargs=(spec, hs)), method
 
 
-def _run_mc(pool, workers, fn, make_args, deadline, chunk_s, on_result, stop=None, min_left=0.05):
+def _run_mc(pool, workers, fn, make_args, deadline, chunk_s, on_result, stop=None, min_left=0.05, tick=None):
     """Keep `workers` tasks in flight until the deadline; each task stops at its own deadline (at least one
-    board). on_result(result) merges; stop() -> True ends the stage early."""
+    board). on_result(result) merges; stop() -> True ends the stage early; tick() runs every loop pass (the
+    rate-limited checkpoint, so a stage whose tasks take longer than checkpoint_every still writes on time)."""
     inflight = []
     k = 0
     while True:
+        if tick is not None:
+            tick()
         now = time.time()
         stopping = (stop is not None and stop()) or now >= deadline - min_left
         while not stopping and len(inflight) < workers:
@@ -323,7 +329,7 @@ def _run_mc(pool, workers, fn, make_args, deadline, chunk_s, on_result, stop=Non
 def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=None, hs=None, grid=EQ_GRID,
                  range_order=None, stages=("a", "m", "c", "b"), shares=None, checkpoint_every=5.0, seed=1,
                  hu_iters=1500, multi_iters=200, matrix_max=400, target_a=0.0015, matrix_boards=3000,
-                 chunk_s=2.0, ante=None, start_method=None, log=_log_default):
+                 chunk_s=2.0, ante=None, start_method=None, log=_log_default, use_table_spec=True):
     """Build the tables for `spec` within `time_budget` seconds of wall clock (pool start-up included). Returns a dict
     with tables, sanity, per-stage seconds and counts, and the output path. See the module docstring."""
     t_start = time.time()
@@ -331,9 +337,13 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
     margin = max(0.3, min(1.5, 0.02 * float(time_budget)))      # pool shutdown + final write
     if evaluator is not None:
         spec = dataclasses.replace(spec, evaluator=evaluator)
+    game_spec = spec
+    if use_table_spec:
+        spec = spec.table_spec()          # a pure double board builds on one board (identical equities)
     if hs is None:
         hs = HandSpace(spec)
     st = _State(hs, grid)
+    st.spec_params = game_spec.spec_params()
     C = hs.n_classes
     base = DEFAULT_SHARES if range_order is None else GIVEN_ORDER_SHARES
     shares = dict(base, **(shares or {}))
@@ -351,7 +361,14 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
         st.b_order_src = "given"
     engine = "range" if (spec.separable and hs.universe is not None) else "rollout"
     meta = {"spec": spec.name, "classes": C, "engine": engine, "workers": workers, "budget_s": time_budget,
-            "started": time.strftime("%Y-%m-%d %H:%M:%S"), "loadavg_start": _loadavg()}
+            "started": time.strftime("%Y-%m-%d %H:%M:%S"), "loadavg_start": _loadavg(),
+            "checkpoint_every_s": checkpoint_every}
+    if spec is not game_spec:
+        meta["table_spec"] = spec.notes
+        log(f"building on the table spec: {spec.notes}")
+    if not spec.separable and time_budget < 300:
+        log(f"WARNING: {spec.name} uses the rollout engine; {time_budget:.0f} s is too short (verify 2026-11-03: "
+            f"90 s gave stderr 0.024 on toss). Use 300-900 s and gate on META['stderr']['a'] <= 0.015.")
     last_ck = [0.0]
 
     def checkpoint(force=False):
@@ -405,7 +422,7 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
                     seen[1] = se is not None and se <= target_a
                     return seen[1]
                 _run_mc(pool, workers, task_fn, lambda k, td: (seed * 1_000_003 + k, 10 ** 9, td, wv),
-                        deadline, chunk_s if engine == "range" else 4 * chunk_s, on_a, stop_a)
+                        deadline, chunk_s if engine == "range" else 4 * chunk_s, on_a, stop_a, tick=checkpoint)
                 st.stderr["a"] = _batch_stderr(batches)
                 ev, _ = st.eq_random()
                 if ev is not None:
@@ -421,7 +438,7 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
                         st.m_num2[i] = [x + y for x, y in zip(r, num2[i])]
                     st.m_boards += nb
                 _run_mc(pool, workers, mc.matrix_task, lambda k, td: (seed * 2_000_003 + k, 10 ** 9, td),
-                        deadline, chunk_s, on_m, lambda: st.m_boards >= matrix_boards)
+                        deadline, chunk_s, on_m, lambda: st.m_boards >= matrix_boards, tick=checkpoint)
                 if st.m_boards:
                     st.E, st.Wavg = _matrix_from_counts(hs, st.m_num2, st.m_boards, spec)
                 st.stage_done["m"] = st.m_boards > 0
@@ -430,7 +447,8 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
                     st.stage_note["c"] = "skipped: no matrix"
                     continue
                 ev, _ = st.eq_random()
-                ok = _solve_stage(pool, workers, st, hs, ev, deadline, hu_iters, multi_iters, ante_bb, log)
+                ok = _solve_stage(pool, workers, st, hs, ev, deadline, hu_iters, multi_iters, ante_bb, log,
+                                  tick=checkpoint)
                 st.stage_done["c"] = ok
             elif s == "b":
                 if st.b_order is None:
@@ -455,7 +473,7 @@ def build_tables(spec, evaluator=None, workers=8, time_budget=60.0, out_path=Non
                     batches_b.append([num[i][0] / (2 * den[i][0]) if den[i][0] > 0 else None for i in range(C)])
                     checkpoint()
                 _run_mc(pool, workers, task_fn, lambda k, td: (seed * 3_000_017 + k, 10 ** 9, td, wv),
-                        deadline, chunk_s if engine == "range" else 4 * chunk_s, on_b)
+                        deadline, chunk_s if engine == "range" else 4 * chunk_s, on_b, tick=checkpoint)
                 st.stderr["b_J3pct_batch"] = _batch_stderr(batches_b)
                 st.stage_done["b"] = st.b_boards > 0
             st.stage_s[s] = round(time.time() - t0, 2)
@@ -556,7 +574,7 @@ def _compat_pairs(hs):
     return pairs
 
 
-def _solve_stage(pool, workers, st, hs, ev, deadline, hu_iters, multi_iters, ante_bb, log):
+def _solve_stage(pool, workers, st, hs, ev, deadline, hu_iters, multi_iters, ante_bb, log, tick=None):
     """Heads-up Nash at 12 stacks and 8-handed Nash at 6 stacks in parallel; adapt iterations to the time left."""
     C = hs.n_classes
     Q = math.comb(hs.N - hs.n, hs.n)
@@ -578,6 +596,8 @@ def _solve_stage(pool, workers, st, hs, ev, deadline, hu_iters, multi_iters, ant
              for S in SV.HU_STACKS]
     hu, m8 = [], []
     while time.time() < deadline + 1.0 and not all(ar.ready() for _, ar in jobs):
+        if tick is not None:
+            tick()
         time.sleep(0.01)
     for kind, ar in jobs:
         if ar.ready():

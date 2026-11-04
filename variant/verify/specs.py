@@ -2,8 +2,8 @@
 spec_from_kit(<the variant's own evaluator>, ...) with the values read off sim/variants/rules/*.md and engine.py.
 Module-level functions so build workers can use them under fork or spawn.
 
-What the spec CANNOT express (see REPORT notes): bounty payoffs (hidden rank, 1.5x + 10), the multiway toss board
-(the spec's board is heads-up: 2 + 1 + 1 plus one toss per player in the rollout), level-dependent antes.
+What the spec CANNOT express: the multiway toss board (the spec's board is heads-up: 2 + 1 + 1 plus one toss per
+player in the rollout) and level-dependent antes. Bounty payoffs are VariantSpec.bounty (since 2026-11-03).
 """
 from sim.kit.cards import evaluate as kit_evaluate
 from sim.variants.evals import evaluate_any, evaluate_short
@@ -29,12 +29,14 @@ def shortdeck():
 
 
 def bounty():
-    # the layer has no bounty field: the card game is plain hold'em, only the payoff changes
+    # card game = plain hold'em; the payoff rule is VariantSpec.bounty (bounty_payoff is the hook the bot uses)
     return spec_from_kit(kit_evaluate, name="bounty", revealed=("bounty_bonus chips",),
-                         notes="bounty payoff (1.5x + 10 on a hit of a hidden per-level rank) not modelled")
+                         bounty={"mult": 0.5, "flat": 10, "mode": "level"})
 
 
 def doubleboard():
+    # a pure double board: build_tables builds it on the NLHE spec (table_spec(), identical equities), so the
+    # separable engines, the matrix and the push/fold re-solve all run (verify 2026-11-03 used the rollout engine)
     return spec_from_kit(kit_evaluate, name="doubleboard", n_boards=2)
 
 
