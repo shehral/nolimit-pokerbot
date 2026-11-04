@@ -15,7 +15,9 @@ Three versions, selected by PARAMS["VERSION"] (or the shell classes BotV0 / BotV
       jam range, E10), caller (light-jam cap, bigger value bets), loose, stealer (re-jam floor, E11), nit; gated SB
       widen (typed-folder BB or a BB whose shrunk jam-call rate is under the break-even, P1); a separate, tighter
       prior for re-jams over a raise (P5); BB defence against late small raises (P6); air c-bets only against seats
-      with observed flop folds (E13 corrected, P10).
+      with observed flop folds (E13 corrected, P10). RANGE_MODEL (RANGE_MODEL notes): per-seat Beta-binomial
+      posteriors of jam / open / 3-bet / jam-call range width from preflop actions of completed hands (never postflop
+      calls), within [prior / 2, prior x 2], price our calls, re-steals, flats, 3-bets and BB defence.
 
 Every tunable number is in PARAMS below. Decisions are lookups and closed forms only (no Monte Carlo); the only
 costly step is an exact BF (about 10-40 us), computed at most BF_PER_DECISION times per decision, cached per hand, and
@@ -156,6 +158,25 @@ PARAMS = {
     "CBET_FRAC": 0.33,            # air c-bet size vs a seat with fold evidence (E13)
     "CBET_FOLD_T": 0.40, "CBET_MIN_OBS": 3,           # shrunk fold-to-flop-bet rate over >= 3 flop bets faced
     "LIGHT_CALL_TYPES": ("maniac", "stealer"),        # call their postflop bets one class lighter (E11)
+    # ---- v2 range model (RANGE_MODEL notes): per-seat Beta-binomial posteriors of range WIDTH from preflop action
+    #      evidence only (never postflop calls), from COMPLETED hands (the current hand's actions are committed at
+    #      the next hand start, so the jam we face is not its own evidence). Each seat's hits over its
+    #      opportunities are compared with the prior's expected hits E at those same spots; with a Beta prior whose
+    #      mean is the prior rate and whose alpha (pseudo-hits) is a, the posterior/prior ratio is
+    #      r = (hits + a) / (E + a) (prior strength in opportunities = a / prior rate); r scales the prior range at
+    #      the current spot, clamped to [prior / RM_CAP, prior x RM_CAP].
+    "RANGE_MODEL": True,          # ON 2026-11-04 (RANGE_MODEL notes, seed 4102, 5,000 paired tables, TOP3 TURBO):
+                                  # AI_MIX +0.055 [+0.018, +0.093], STRONG +0.036 [+0.001, +0.072], T6_like +0.054
+                                  # [+0.020, +0.088]; False = v2 as before (the NLHE golden identity test pins False)
+    "RM_A_JAM": 3.0,              # Beta alpha (pseudo-hits): first-in jams in the jam zone -> jam ranges
+    "RM_A_OPEN": 4.0,             # ... first-in raises (no limpers, deep enough) -> open ranges
+    "RM_A_3BET": 2.0,             # ... re-raises facing one non-all-in raise -> re-jam / 3-bet ranges
+    "RM_A_CALL": 2.0,             # ... jam calls vs expected Nash calls -> range of a seat that called a jam
+    "RM_CAP": 2.0,                # posterior range within [prior / this, prior x this]
+    "RM_JAM_MAX_BB": 25.0,        # a first-in decision is jam evidence only at effective depth <= this (bb)
+    "RM_OPEN_MIN_BB": 15.0,       # ... open evidence only at effective depth >= this (bb; shallower = jam/fold zone)
+    "RM_RULE_EXP": 1.0,           # our flat / 3-bet / BB-defence fractions x (posterior / prior raiser range) ** this
+    "RM_BB_DEFEND_MAX": 0.50,     # ... with the BB defence fraction capped at this
 }
 
 RANKS = "23456789TJQKA"
@@ -748,10 +769,16 @@ def icm_pack(pays, n_seats, lo, hi, no_gain=4.0):
 
 
 # ===================================== per-seat statistics and the hand tracker =====================================
+RM_FIELDS = ("rm_jam_n", "rm_jam_hit", "rm_jam_exp", "rm_open_n", "rm_open_hit", "rm_open_exp",
+             "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp")
+
+
 class SeatStat:
     __slots__ = ("pf_dec", "pf_vol", "pf_fold", "jam_opp", "jam_first", "jams", "jam_faced", "jam_called", "jam_exp",
                  "late_opp", "late_open", "post_faced", "post_call", "post_fold", "flop_faced", "flop_fold",
-                 "vol_ever", "vol_hand")
+                 "vol_ever", "vol_hand",
+                 "rm_jam_n", "rm_jam_hit", "rm_jam_exp", "rm_open_n", "rm_open_hit", "rm_open_exp",
+                 "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp")
 
     def __init__(self):
         self.pf_dec = self.pf_vol = self.pf_fold = 0
@@ -763,6 +790,16 @@ class SeatStat:
         self.flop_faced = self.flop_fold = 0
         self.vol_ever = 0
         self.vol_hand = False
+        # range-model evidence (RANGE_MODEL only; preflop actions of completed hands): opportunities, hits,
+        # prior-expected hits; the order matches the HandTracker.rm_pend lists (RM_FIELDS)
+        self.rm_jam_n = self.rm_jam_hit = 0
+        self.rm_jam_exp = 0.0
+        self.rm_open_n = self.rm_open_hit = 0
+        self.rm_open_exp = 0.0
+        self.rm_3b_n = self.rm_3b_hit = 0
+        self.rm_cj_n = self.rm_cj_hit = 0
+        self.rm_cj_exp = 0.0
+
 
 
 def preflop_order(n, alive, sb_seat, bb_seat):
@@ -786,17 +823,20 @@ class HandTracker:
     __slots__ = ("P", "stats", "n", "hand_no", "street", "n_done", "bb", "ante", "start", "stake", "contrib", "bets",
                  "folded", "allin", "pre", "pos", "bb_seat", "cur", "pf_raises", "last_raiser", "raise_to",
                  "open_k", "open_seat", "limpers", "limper_seats", "callers_since_raise", "jam", "jam_responders",
-                 "pf_aggr", "posted", "jam_ranges")
+                 "pf_aggr", "posted", "jam_ranges", "rm_pend")
 
     def __init__(self, P, stats, n):
         self.P = P                        # the brain's PARAMS and per-seat stats (no back-reference to the brain,
         self.stats = stats                # so a finished table's objects are freed by reference counting alone)
         self.n = n
         self.hand_no = None
+        self.rm_pend = None               # RANGE_MODEL: this hand's evidence per seat, committed at the next hand
         self._reset(None, [0] * n, [False] * n, 0, 1, 20, 0)
 
     def _reset(self, hand_no, start, alive, sb_seat, bb_seat, bb, ante):
         n = self.n
+        if self.rm_pend:
+            self.rm_commit()
         self.hand_no = hand_no
         self.street = 0
         self.n_done = 0
@@ -871,6 +911,7 @@ class HandTracker:
         st = self.stats[s]
         before = self.bets[s]
         cur = self.cur
+        c0 = self.contrib[s]
         vol = kind == "call" or kind == "raise"
         if kind == "fold":
             self.folded[s] = True
@@ -890,6 +931,8 @@ class HandTracker:
             elif kind == "fold":
                 st.pf_fold += 1
             unopened = self.pf_raises == 0
+            if P["RANGE_MODEL"] and kind != "check":
+                self._rm_evidence(s, kind, unopened, c0)
             if unopened and kind != "check":
                 st.jam_opp += 1
                 if kind == "raise" and self.allin[s]:
@@ -906,7 +949,14 @@ class HandTracker:
                 if vol:
                     st.jam_called += 1
                 S_resp = min(self.stake[s], jam[3]) / self.bb
-                st.jam_exp += call_pct(P["REJAM_PRIOR"] if jam[2] else jam[1], S_resp, P["CALL_FIT"])
+                x = call_pct(P["REJAM_PRIOR"] if jam[2] else jam[1], S_resp, P["CALL_FIT"])
+                st.jam_exp += x
+                if P["RANGE_MODEL"]:
+                    d = self._rm_d(s)
+                    d[8] += 1
+                    d[10] += x
+                    if vol:
+                        d[9] += 1
             if kind == "raise":
                 first_in = self.pf_raises == 0
                 if self.allin[s]:
@@ -949,6 +999,76 @@ class HandTracker:
                 st.vol_hand = True
         if kind == "raise" and amt > self.cur:
             self.cur = amt
+
+    def _rm_d(self, s):
+        if self.rm_pend is None:
+            self.rm_pend = {}
+        d = self.rm_pend.get(s)
+        if d is None:
+            d = self.rm_pend[s] = [0, 0, 0.0, 0, 0, 0.0, 0, 0, 0, 0, 0.0]
+        return d
+
+    def rm_commit(self):
+        """Add the finished hand's range-model evidence to the per-seat counters."""
+        stats = self.stats
+        for s, d in self.rm_pend.items():
+            st = stats[s]
+            st.rm_jam_n += d[0]
+            st.rm_jam_hit += d[1]
+            st.rm_jam_exp += d[2]
+            st.rm_open_n += d[3]
+            st.rm_open_hit += d[4]
+            st.rm_open_exp += d[5]
+            st.rm_3b_n += d[6]
+            st.rm_3b_hit += d[7]
+            st.rm_cj_n += d[8]
+            st.rm_cj_hit += d[9]
+            st.rm_cj_exp += d[10]
+        self.rm_pend = {}
+
+    def _rm_evidence(self, s, kind, unopened, c0):
+        """Range-model evidence from one preflop decision (fold / call / raise) of seat s, recorded BEFORE the
+        tracker's raise state changes, into this hand's pending list (committed at the next hand start). Jam
+        evidence: first-in at effective depth <= RM_JAM_MAX_BB, expected hits = the first-in jam formula at the
+        spot (the estimate the tracker gives a jam there). Open evidence: first-in with no limpers, not the BB,
+        depth >= RM_OPEN_MIN_BB, expected = the open prior by players behind, hit = any raise. 3-bet evidence:
+        facing exactly one raise that was not all-in, with a raise still possible, hit = a re-raise. Jam-call
+        evidence is recorded where the tracker counts a jam faced. Postflop actions never reach here."""
+        P = self.P
+        bb = self.bb
+        if unopened:
+            p = self.pos.get(s)
+            if p is None:
+                return
+            opp = [self.stake[j] for j in self.pre[p + 1:] if not self.folded[j]]
+            kb = len(opp)
+            k = kb + self.limpers
+            if k <= 0:
+                return
+            S_r = min(self.stake[s], max(opp)) / bb if opp else self.stake[s] / bb
+            hit = kind == "raise"
+            jam_zone = S_r <= P["RM_JAM_MAX_BB"]
+            open_zone = self.limpers == 0 and kb > 0 and s != self.bb_seat and S_r >= P["RM_OPEN_MIN_BB"]
+            if not (jam_zone or open_zone):
+                return
+            d = self._rm_d(s)
+            if jam_zone:
+                pot_before = sum(self.contrib) - (self.contrib[s] - c0)
+                S_eq = equiv_depth(S_r, pot_before / bb, P) if pot_before > 0 else S_r
+                d[0] += 1
+                d[2] += jam_pct(S_eq, k, P["JAM_FIT"])
+                if hit and self.allin[s]:
+                    d[1] += 1
+            if open_zone:
+                d[3] += 1
+                d[5] += by_k(P["OPEN_PRIOR"] or P["OPEN_PCT"], kb)
+                if hit:
+                    d[4] += 1
+        elif self.pf_raises == 1 and self.jam is None and s != self.last_raiser and self.stake[s] > self.raise_to:
+            d = self._rm_d(s)
+            d[6] += 1
+            if kind == "raise":
+                d[7] += 1
 
     def sync_from_view(self, v):
         """Bring the tracker up to date with the view's history (no-op when observe() already delivered it)."""
@@ -1017,6 +1137,7 @@ class Brain:
         self.t0 = 0
         self.types = {}
         self.open_prior = P["OPEN_PRIOR"] or P["OPEN_PCT"]
+        self.rm = bool(P["RANGE_MODEL"]) and self.version >= 2    # range model (v2 only; the v0 fallback skips it)
         self.guard_trips = 0      # decisions where the guard stopped optional work (diagnostic)
         self.bf_computed = 0
         self.n_jam_gated = 0      # v1+ first-in jam decisions that used the gated (caller-side) ICM formula
@@ -1152,14 +1273,49 @@ class Brain:
         self.types[j] = t
         return t
 
+    def rm_ratio(self, hits, expected, a):
+        """Range model: posterior / prior width ratio (hits + a) / (expected + a) for a Beta prior with the prior rate
+        as mean and alpha a, clamped to [1/RM_CAP, RM_CAP]; 1.0 without evidence."""
+        if expected <= 0.0:
+            return 1.0
+        r = (hits + a) / (expected + a)
+        cap = self.P["RM_CAP"]
+        if r > cap:
+            return cap
+        lo = 1.0 / cap
+        return r if r > lo else lo
+
+    def rm_jam_ratio(self, j, is_rejam):
+        """Width ratio of seat j's jam (first-in jam evidence) or re-raise (3-bet evidence) range."""
+        st = self.stats[j]
+        P = self.P
+        if is_rejam:
+            return self.rm_ratio(st.rm_3b_hit, st.rm_3b_n * P["REJAM_PRIOR"], P["RM_A_3BET"])
+        return self.rm_ratio(st.rm_jam_hit, st.rm_jam_exp, P["RM_A_JAM"])
+
+    def rm_open_ratio(self, j):
+        st = self.stats[j]
+        return self.rm_ratio(st.rm_open_hit, st.rm_open_exp, self.P["RM_A_OPEN"])
+
+    def rm_call_ratio(self, j):
+        """Width ratio of a seat that already called a jam, from its jam calls vs expected Nash calls in completed
+        hands (jam-call evidence only; postflop calls never count)."""
+        st = self.stats[j]
+        return self.rm_ratio(st.rm_cj_hit, st.rm_cj_exp, self.P["RM_A_CALL"])
+
     def jam_range_of(self, j, J_formula, is_rejam):
         """Estimated range of seat j's jam. v0/v1: the first-in formula at its spot (also for re-jams, as tested);
-        v2: re-jams get REJAM_PRIOR (P5); a typed maniac's range is its own shrunk jam rate (E10); loose floor."""
+        v2: re-jams get REJAM_PRIOR (P5); a typed maniac's range is its own shrunk jam rate (E10); loose floor.
+        RANGE_MODEL: the prior (formula or REJAM_PRIOR) is scaled by the seat's posterior ratio first."""
         if self.version < 2:
             return J_formula
         P = self.P
         t = self.seat_type(j)
         J = P["REJAM_PRIOR"] if is_rejam else J_formula
+        if self.rm:
+            J *= self.rm_jam_ratio(j, is_rejam)
+            if J > 1.0:
+                J = 1.0
         if t == "maniac":
             st = self.stats[j]
             J = max(J, self.shrunk(st.jam_first, st.jam_opp, "jam"), P["J_FLOOR"]["maniac"])
@@ -1192,12 +1348,12 @@ class Brain:
         """P15: the v0 decision (no ICM, no typing) for the same view. The shell calls this only when decide()
         raised, so an error in optional work costs the refinement, not the whole decision. The tracker resumes
         after the entry that failed (feed() counts an entry before processing it), so nothing is fed twice."""
-        ver, icm = self.version, self.icm_on
-        self.version, self.icm_on = 0, False
+        ver, icm, rm = self.version, self.icm_on, self.rm
+        self.version, self.icm_on, self.rm = 0, False, False
         try:
             return self.decide(v, t0)
         finally:
-            self.version, self.icm_on = ver, icm
+            self.version, self.icm_on, self.rm = ver, icm, rm
 
     # ------------------------------------------------------------------ preflop
     def preflop(self, v):
@@ -1273,7 +1429,15 @@ class Brain:
             return ("check",)
         committed = v.to_call >= P["COMMIT_TO_CALL_FRAC"] * tot[me] or S <= P["PF_DEPTH_BB"]
         late_small = False
-        if ver >= 2:
+        raise_top, flat_top, bb_def = P["RAISE_TOP"], P["FLAT_TOP"], P["BB_DEFEND_PCT"]
+        if ver >= 2 and self.rm:
+            O, late_small, sc = self.open_range_rm(r, v)
+            if sc != 1.0:
+                sc = sc ** P["RM_RULE_EXP"]
+                raise_top *= sc
+                flat_top *= sc
+                bb_def = min(bb_def * sc, P["RM_BB_DEFEND_MAX"])
+        elif ver >= 2:
             O, late_small = self.open_range(r, v)
         else:
             # tested brain: the raiser's range = the first-in jam formula at its own depth and position
@@ -1286,17 +1450,17 @@ class Brain:
                 C = C / self.bf(me, r) ** P["CALL_LAM"]
             if cp <= P["RESTEAL_MULT"] * C:
                 return ("allin",)
-            if late_small and me == v.bb_seat and cp <= P["BB_DEFEND_PCT"] and \
+            if late_small and me == v.bb_seat and cp <= bb_def and \
                     v.to_call <= P["BB_DEFEND_MAX_FRAC"] * tot[me]:
                 return ("call",)                                          # P6: BB defence vs a late small raise
             return ("fold",)
-        if pp <= P["RAISE_TOP"]:
+        if pp <= raise_top:
             if S <= P["FOURBET_JAM_MAX_BB"]:
                 return ("allin",)
             return ("raise", int(P["THREEBET_MULT"] * max(bets)))
-        if pp <= P["FLAT_TOP"] and v.to_call <= P["FLAT_MAX_STACK"] * tot[me]:
+        if pp <= flat_top and v.to_call <= P["FLAT_MAX_STACK"] * tot[me]:
             return ("call",)
-        if late_small and me == v.bb_seat and cp <= P["BB_DEFEND_PCT"] and \
+        if late_small and me == v.bb_seat and cp <= bb_def and \
                 v.to_call <= P["BB_DEFEND_MAX_FRAC"] * tot[me]:
             return ("call",)
         return ("fold",)
@@ -1376,6 +1540,31 @@ class Brain:
                 O = max(O, P["J_FLOOR"]["maniac"])
         return O, late_small
 
+    def open_range_rm(self, r, v):
+        """RANGE_MODEL version of open_range: the evidence-free prior (open prior by position, P6 late-small floor;
+        re-raises: REJAM_PRIOR) x the seat's posterior ratio (open or 3-bet evidence), then the typing floors.
+        Returns (O, late_small, scale) with scale = O / open_range's O, used for our flat / 3-bet / BB rules."""
+        P = self.P
+        tr = self.tr
+        O0, late_small = self.open_range(r, v)
+        t = self.seat_type(r)
+        if tr.pf_raises <= 1:
+            k_r = tr.open_k if tr.open_seat == r else P["OPEN_K_UNKNOWN"]
+            O = by_k(self.open_prior, k_r)
+            if late_small:
+                O = max(O, P["LATE_OPEN_FLOOR"])
+            O *= self.rm_open_ratio(r)
+            fl = P["J_FLOOR"].get(t)
+            if fl is not None:
+                O = max(O, fl)
+        else:
+            O = P["REJAM_PRIOR"] * self.rm_jam_ratio(r, True)
+            if t == "maniac":
+                O = max(O, P["J_FLOOR"]["maniac"])
+        if O > 1.0:
+            O = 1.0
+        return O, late_small, (O / O0 if O0 > 0.0 else 1.0)
+
     def call_jam(self, v, jammer, J_formula, is_rejam, cls, tot, near):
         """Call (or re-jam over a near-all-in raise) by equity against the jammer's estimated range."""
         P = self.P
@@ -1398,7 +1587,10 @@ class Brain:
             if j == me or j == jammer or not v.in_hand[j]:
                 continue
             if j in responders:
-                eq *= eq_vs(cls, Jc)                                      # already called the jam
+                if self.rm:                                               # its jam-call width, shrunk
+                    eq *= eq_vs(cls, min(1.0, Jc * self.rm_call_ratio(j)))
+                else:
+                    eq *= eq_vs(cls, Jc)                                  # already called the jam
             elif v.all_in[j]:
                 jr = tr.jam_ranges.get(j)                                 # an earlier jam: its own estimated range;
                 eq *= eq_vs(cls, self.jam_range_of(j, jr[0], jr[1]) if jr else 1.0)   # all-in from a blind: any two

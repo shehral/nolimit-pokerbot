@@ -1,0 +1,376 @@
+[
+ {
+  "field": "AI_MIX",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.5827,
+  "diff": 0.0702,
+  "lo": 0.032,
+  "hi": 0.1084,
+  "load": [
+   5.76,
+   18.91
+  ],
+  "finished": "2026-11-04 02:11:49 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_MIX",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_RULE_EXP=0.0",
+  "v2_rel": 1.5827,
+  "diff": 0.037,
+  "lo": 0.0119,
+  "hi": 0.0621,
+  "load": [
+   5.76,
+   18.91
+  ],
+  "finished": "2026-11-04 02:11:49 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_MIX",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_A_JAM=6.0,RM_A_OPEN=8.0,RM_A_3BET=4.0,RM_A_CALL=4.0",
+  "v2_rel": 1.5827,
+  "diff": 0.0483,
+  "lo": 0.0133,
+  "hi": 0.0833,
+  "load": [
+   5.76,
+   18.91
+  ],
+  "finished": "2026-11-04 02:11:49 PST",
+  "workers": 4
+ },
+ {
+  "field": "STRONG",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.3203,
+  "diff": 0.0506,
+  "lo": 0.0152,
+  "hi": 0.086,
+  "load": [
+   18.91,
+   37.3
+  ],
+  "finished": "2026-11-04 02:14:13 PST",
+  "workers": 4
+ },
+ {
+  "field": "STRONG",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_RULE_EXP=0.0",
+  "v2_rel": 1.3203,
+  "diff": 0.0219,
+  "lo": 0.0004,
+  "hi": 0.0434,
+  "load": [
+   18.91,
+   37.3
+  ],
+  "finished": "2026-11-04 02:14:13 PST",
+  "workers": 4
+ },
+ {
+  "field": "STRONG",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_A_JAM=6.0,RM_A_OPEN=8.0,RM_A_3BET=4.0,RM_A_CALL=4.0",
+  "v2_rel": 1.3203,
+  "diff": 0.0463,
+  "lo": 0.0149,
+  "hi": 0.0778,
+  "load": [
+   18.91,
+   37.3
+  ],
+  "finished": "2026-11-04 02:14:13 PST",
+  "workers": 4
+ },
+ {
+  "field": "T6_like",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.6057,
+  "diff": 0.0585,
+  "lo": 0.0231,
+  "hi": 0.0938,
+  "load": [
+   37.3,
+   22.4
+  ],
+  "finished": "2026-11-04 02:17:43 PST",
+  "workers": 4
+ },
+ {
+  "field": "T6_like",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_RULE_EXP=0.0",
+  "v2_rel": 1.6057,
+  "diff": 0.0135,
+  "lo": -0.0054,
+  "hi": 0.0324,
+  "load": [
+   37.3,
+   22.4
+  ],
+  "finished": "2026-11-04 02:17:43 PST",
+  "workers": 4
+ },
+ {
+  "field": "T6_like",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True,RM_A_JAM=6.0,RM_A_OPEN=8.0,RM_A_3BET=4.0,RM_A_CALL=4.0",
+  "v2_rel": 1.6057,
+  "diff": 0.0262,
+  "lo": -0.0052,
+  "hi": 0.0577,
+  "load": [
+   37.3,
+   22.4
+  ],
+  "finished": "2026-11-04 02:17:43 PST",
+  "workers": 4
+ },
+ {
+  "field": "ai_default_ml",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 2.3558,
+  "diff": 0.0495,
+  "lo": 0.0202,
+  "hi": 0.0789,
+  "load": [
+   17.96,
+   20.37
+  ],
+  "finished": "2026-11-04 02:18:38 PST",
+  "workers": 4
+ },
+ {
+  "field": "ai_poker_pro",
+  "payouts": "TOP3",
+  "seed": 4101,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.1293,
+  "diff": 0.0163,
+  "lo": -0.0307,
+  "hi": 0.0633,
+  "load": [
+   20.37,
+   28.01
+  ],
+  "finished": "2026-11-04 02:19:19 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_MIX",
+  "payouts": "TOP3",
+  "seed": 4102,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.598,
+  "diff": 0.0553,
+  "lo": 0.0178,
+  "hi": 0.0929,
+  "load": [
+   28.01,
+   15.8
+  ],
+  "finished": "2026-11-04 02:21:05 PST",
+  "workers": 4
+ },
+ {
+  "field": "STRONG",
+  "payouts": "TOP3",
+  "seed": 4102,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.3489,
+  "diff": 0.0361,
+  "lo": 0.0005,
+  "hi": 0.0718,
+  "load": [
+   15.8,
+   14.76
+  ],
+  "finished": "2026-11-04 02:21:55 PST",
+  "workers": 4
+ },
+ {
+  "field": "T6_like",
+  "payouts": "TOP3",
+  "seed": 4102,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.6212,
+  "diff": 0.0541,
+  "lo": 0.02,
+  "hi": 0.0883,
+  "load": [
+   14.76,
+   11.34
+  ],
+  "finished": "2026-11-04 02:23:24 PST",
+  "workers": 4
+ },
+ {
+  "field": "ai_default_ml",
+  "payouts": "TOP3",
+  "seed": 4102,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 2.3636,
+  "diff": 0.0525,
+  "lo": 0.0306,
+  "hi": 0.0743,
+  "load": [
+   11.34,
+   10.71
+  ],
+  "finished": "2026-11-04 02:23:58 PST",
+  "workers": 4
+ },
+ {
+  "field": "ai_poker_pro",
+  "payouts": "TOP3",
+  "seed": 4102,
+  "tables": 5000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.145,
+  "diff": -0.017,
+  "lo": -0.052,
+  "hi": 0.0179,
+  "load": [
+   10.71,
+   18.96
+  ],
+  "finished": "2026-11-04 02:25:01 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_MIX",
+  "payouts": "LINEAR",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.2615,
+  "diff": -0.0007,
+  "lo": -0.013,
+  "hi": 0.0116,
+  "load": [
+   22.65,
+   18.3
+  ],
+  "finished": "2026-11-04 02:30:18 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_ONLY",
+  "payouts": "LINEAR",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.2741,
+  "diff": 0.0086,
+  "lo": -0.0051,
+  "hi": 0.0222,
+  "load": [
+   12.94,
+   22.65
+  ],
+  "finished": "2026-11-04 02:28:20 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_ONLY",
+  "payouts": "TOP3",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.5982,
+  "diff": 0.0256,
+  "lo": -0.0299,
+  "hi": 0.081,
+  "load": [
+   44.66,
+   31.95
+  ],
+  "finished": "2026-11-04 02:36:21 PST",
+  "workers": 4
+ },
+ {
+  "field": "AI_ONLY",
+  "payouts": "WTA",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.7783,
+  "diff": 0.129,
+  "lo": 0.0016,
+  "hi": 0.2564,
+  "load": [
+   18.3,
+   79.89
+  ],
+  "finished": "2026-11-04 02:32:04 PST",
+  "workers": 4
+ },
+ {
+  "field": "STRONG",
+  "payouts": "WTA",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 1.7084,
+  "diff": 0.0946,
+  "lo": -0.0097,
+  "hi": 0.1989,
+  "load": [
+   57.41,
+   44.66
+  ],
+  "finished": "2026-11-04 02:34:34 PST",
+  "workers": 4
+ },
+ {
+  "field": "T6_like",
+  "payouts": "WTA",
+  "seed": 4103,
+  "tables": 3000,
+  "candidate": "v2:RANGE_MODEL=True",
+  "v2_rel": 2.1558,
+  "diff": 0.0926,
+  "lo": -0.0188,
+  "hi": 0.204,
+  "load": [
+   79.89,
+   57.41
+  ],
+  "finished": "2026-11-04 02:33:43 PST",
+  "workers": 4
+ }
+]

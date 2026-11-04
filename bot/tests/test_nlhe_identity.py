@@ -34,7 +34,9 @@ def record(n=N_DECISIONS):
               # the 2026-11-03 tuning switches (TUNING_LOG notes) pinned to the pre-tuning rules, so this test keeps
               # checking the decision code against the golden recorded at df8e93b (not regenerated); the tuned
               # defaults are covered by test_tuning.py
-              "TUNE_BY_PAYOUT": False, "CALLER_CAP_JAM_EVIDENCE": False}
+              "TUNE_BY_PAYOUT": False, "CALLER_CAP_JAM_EVIDENCE": False,
+              # the range model (RANGE_MODEL notes) pinned off for the same reason, whatever its shipped default
+              "RANGE_MODEL": False}
 
     def ours(version):
         def make(seat, cfg):
