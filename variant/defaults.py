@@ -119,6 +119,32 @@ def best_keep_indices(hole, k, score=None, slot=4):
     return best
 
 
+def keep_with_penalty(view, penalty, score=None, slot=4):
+    """Keep/discard/toss answer that maximises static score(kept) - penalty(kept, given_up) over every legal kept
+    subset (DISCARD_LEAK notes: the information-leak penalty on revealed discards). penalty(kept_cards,
+    given_up_cards) -> float in score units; a penalty of 0 gives exactly best_keep_indices (same order, same
+    ties). Returns an answer in the view's format, or None for other request kinds. Never rolls out."""
+    if view.get("kind") not in ("keep", "discard", "toss"):
+        return None
+    hole = list(view.get("hole") or ())
+    n = len(hole)
+    k = n_keep(view)
+    if k >= n or k <= 0:
+        return None
+    sc = score or (lambda cs: static_score(cs, slot))
+    best, bk = None, None
+    for idx in combinations(range(n), k):
+        kept = [hole[i] for i in idx]
+        out = [hole[i] for i in range(n) if i not in idx]
+        s = sc(kept) - penalty(kept, out)
+        if bk is None or s > bk:
+            best, bk = idx, s
+    opts = view.get("options")
+    if opts:
+        return _best_option(view, opts, best)
+    return _from_keep(view, best)
+
+
 def _from_keep(view, keep_idx):
     fmt = view.get("response")
     hole = list(view.get("hole") or ())

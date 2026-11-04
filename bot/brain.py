@@ -52,6 +52,15 @@ PARAMS = {
     "KEEP_BOARD_AWARE": False,    # keep/discard/toss requests: True = keep_policy (postflop class on the known board
                                   # + NLHE order); False = the variant layer's static keep. Toss A/B 2026-11-03, 1,000
                                   # paired tables vs 7 TossExample: board-aware -2.6 pts [-3.7, -1.5], so OFF
+    "LEAK_PENALTY": False,        # revealed discards (DISCARD_LEAK notes): keep = static score - LEAK_LAMBDA x the
+                                  # strength a reader infers from the cards we give up (reader model below); keeps 2
+    "LEAK_LAMBDA": 20.0,          # penalty in static-score units per unit of revealed strength shift
+    "USE_REVEALED": False,        # postflop calls: the bettor's revealed discards narrow its kept range (reader model);
+                                  # our class is moved one step when the read shifts its ahead-share by REVEAL_T
+    "REVEAL_EPS": 0.1,            # reader model: likelihood of a discard that is not the model's worst card (measured
+                                  # 2026-11-04: the NLHE-order toss-worst model names our static toss 93.5% and the
+                                  # kit-style TossExample's 84.3% of the time on random 3-card hands)
+    "REVEAL_T": 0.10,             # |shift in the bettor's ahead-share vs us| that moves our call class one step
     # ---- payout and ICM (v1+)
     "ICM_ON": None,               # None = auto (off under winner-take-all, where every BF is 1); True/False forces
     "BF_MIN": 0.5, "BF_MAX": 6.0,  # BF clamp (tested values)
@@ -550,7 +559,248 @@ def keep_policy(view):
     return None
 
 
-KEEP_POLICY = keep_policy if PARAMS["KEEP_BOARD_AWARE"] else None     # the shell passes this to defaults.respond
+# ===================================== revealed discards: reader model, leak-aware keep (DISCARD_LEAK notes) ======
+# Reader model (rank level, suits ignored): a player dealt more cards than it keeps keeps the 2 cards that are
+# strongest in the NLHE push order and gives up the rest; a discard that is not the model's choice has likelihood
+# REVEAL_EPS relative to one that is. The posterior over a player's kept rank pair given its revealed discards D is
+#   w(x, y) = combos(x, y | unseen cards) x (1 if S2[x][y] >= S2[x][d] and S2[y][d] for every d in D else EPS)
+# S2 = 1 - NLHE push percentile of the offsuit (or pair) label: 1 = AA, 0 = the worst hand.
+_RX = range(13)
+S2 = [[1.0 - _NL_PUSH_PCT[_NL_CLASS_OF[(x << 2) * 52 + ((y << 2) | 1)]] for y in _RX] for x in _RX]   # NLHE tables
+_RANK_PAIRS = tuple((x, y) for x in _RX for y in range(x, 13))         # 91 kept rank pairs, x <= y
+_CARD_RANK = {r: i for i, r in enumerate(RANKS)}
+_CARD_RANK.update({r.lower(): i for i, r in enumerate(RANKS)})
+_CARD_RANK["10"] = 8
+_CARD_SUIT = {"c": 0, "d": 1, "h": 2, "s": 3, "C": 0, "D": 1, "H": 2, "S": 3, "♣": 0, "♦": 1, "♥": 2, "♠": 3}
+
+
+def card_int(c):
+    """Event card (e.g. 'Ah', '10h', an int 0..51) -> int in the adapter's numbering; None if unreadable."""
+    try:
+        if isinstance(c, int) and not isinstance(c, bool):
+            return c if 0 <= c < 52 else None
+        s = str(c).strip()
+        return (_CARD_RANK[s[:-1]] << 2) | _CARD_SUIT[s[-1]]
+    except Exception:         # noqa: BLE001
+        return None
+
+
+def reveal_lik(dr, eps):
+    """Reader-model likelihood of each kept rank pair (index order of _RANK_PAIRS) given discarded ranks dr."""
+    out = []
+    for x, y in _RANK_PAIRS:
+        s = S2[x][y]
+        ok = True
+        for d in dr:
+            if S2[x][d] > s or S2[y][d] > s:
+                ok = False
+                break
+        out.append(1.0 if ok else eps)
+    return out
+
+
+def reveal_shift_prior(dr, eps):
+    """Strength a reader infers from discarded ranks dr on a full deck: E[S2 kept | dr] - E[S2 kept] (no discards
+    seen). The leak of giving up those cards; about 0.03 for a deuce up to 0.26 for a nine at EPS 0.1."""
+    cnt = [4] * 13
+    for d in dr:
+        cnt[d] -= 1
+    lik = reveal_lik(dr, eps)
+    w0 = e0 = w1 = e1 = 0.0
+    for i, (x, y) in enumerate(_RANK_PAIRS):
+        n = cnt[x] * (cnt[x] - 1) // 2 if x == y else cnt[x] * cnt[y]
+        if n <= 0:
+            continue
+        s = S2[x][y]
+        w0 += n
+        e0 += n * s
+        wl = n * lik[i]
+        w1 += wl
+        e1 += wl * s
+    return (e1 / w1 if w1 > 0 else e0 / w0) - e0 / w0
+
+
+_LEAK_CACHE = {}
+
+
+def leak_of(cards, eps):
+    """Leak (reveal_shift_prior, floored at 0) of giving up these cards; cached by (ranks, eps)."""
+    key = (tuple(sorted(c >> 2 for c in cards)), eps)
+    v = _LEAK_CACHE.get(key)
+    if v is None:
+        v = reveal_shift_prior(key[0], eps)
+        v = v if v > 0.0 else 0.0
+        if len(_LEAK_CACHE) < 4096:
+            _LEAK_CACHE[key] = v
+    return v
+
+
+for _r in _RX:                    # single-card leaks at the default EPS, so no request computes one inside act()
+    leak_of((_r << 2,), PARAMS["REVEAL_EPS"])
+
+
+def reveal_board(hole, board, dead):
+    """The opponents' kept rank pairs on this board: [(pair index, combos left, rank-level class)] for pairs with
+    combos left. Rank-level class on hand_class's scale without flushes or draws: set / trips / two pair / a straight
+    using a hole card = 3, overpair or top pair = 2, a lower pair = 1, else 0. dead = revealed cards that are not on
+    the board (muck variants). About 25 us; cached per board by the caller."""
+    cnt = [4] * 13
+    for c in hole:
+        cnt[c >> 2] -= 1
+    bcnt = [0] * 13
+    bmask = 0
+    top = 0
+    for c in board:
+        r = c >> 2
+        cnt[r] -= 1
+        bcnt[r] += 1
+        bmask |= 1 << r
+        if r > top:
+            top = r
+    for c in dead:
+        cnt[c >> 2] -= 1
+    bmax = max(bcnt) if board else 0
+    bsh = _straight_high(bmask)
+    miss = []                                      # rank masks a kept pair must cover to make a better straight
+    for t in range(12, 3, -1):
+        if t > bsh:
+            m = (31 << (t - 4)) & ~bmask
+            if bin(m).count("1") <= 2:
+                miss.append(m)
+    if 3 > bsh:
+        m = 0x100F & ~bmask
+        if bin(m).count("1") <= 2:
+            miss.append(m)
+    rows = []
+    i = -1
+    for x, y in _RANK_PAIRS:
+        i += 1
+        cx = cnt[x]
+        if x == y:
+            n = cx * (cx - 1) // 2
+            if n <= 0:
+                continue
+            c = 3 if bcnt[x] else (2 if (bmax >= 3 or x > top) else 1)
+        else:
+            n = cx * cnt[y]
+            if n <= 0:
+                continue
+            bx, by = bcnt[x], bcnt[y]
+            if (bx and by) or bx >= 2 or by >= 2:
+                c = 3
+            elif by:
+                c = 2 if y == top else 1
+            elif bx:
+                c = 2 if x == top else 1
+            else:
+                c = 0
+        if c < 3 and miss:
+            hm = (1 << x) | (1 << y)
+            for m in miss:
+                if m & hm == m:
+                    c = 3
+                    break
+        rows.append((i, n, c))
+    return rows
+
+
+def reveal_delta_rows(rows, lik, cls):
+    """Shift of a bettor's ahead-share against our class `cls` from its revealed discards: A(read) - A(no read),
+    with A = P(its class > cls) + 0.5 P(== cls) over reveal_board rows; lik = reveal_lik of its discards."""
+    w0 = [0.0, 0.0, 0.0, 0.0]
+    w1 = [0.0, 0.0, 0.0, 0.0]
+    for i, n, c in rows:
+        w0[c] += n
+        w1[c] += n * lik[i]
+    t0 = w0[0] + w0[1] + w0[2] + w0[3]
+    t1 = w1[0] + w1[1] + w1[2] + w1[3]
+    if t0 <= 0 or t1 <= 0:
+        return 0.0
+    a0 = a1 = 0.0
+    for c in range(cls, 4):
+        f = 0.5 if c == cls else 1.0
+        a0 += f * w0[c]
+        a1 += f * w1[c]
+    return a1 / t1 - a0 / t0
+
+
+def reveal_delta(hole, board, dead, lik, cls):
+    """reveal_delta_rows on reveal_board(hole, board, dead) (one call; the brain caches the board rows)."""
+    return reveal_delta_rows(reveal_board(hole, board, dead), lik, cls)
+
+
+class RevealTracker:
+    """Cards each seat revealed this hand (public discard / toss events), fed by Brain.observe. Inert when no such
+    event arrives (plain hold'em, or a platform that does not call observe)."""
+    __slots__ = ("hand_no", "cards", "lik", "cache", "rows")
+
+    def __init__(self):
+        self.hand_no = None
+        self.cards = {}           # seat -> [card ints]
+        self.lik = {}             # seat -> reveal_lik of its discards (computed on first use)
+        self.cache = {}           # (seat, board length, our class) -> reveal_delta
+        self.rows = {}            # board length -> reveal_board rows
+
+    def add(self, hand_no, seat, cards):
+        if hand_no != self.hand_no:
+            self.hand_no = hand_no
+            self.cards = {}
+            self.lik = {}
+            self.cache = {}
+        self.rows = {}
+        lst = self.cards.setdefault(seat, [])
+        for c in cards:
+            ci = card_int(c)
+            if ci is not None and ci not in lst:
+                lst.append(ci)
+        self.lik.pop(seat, None)
+        self.cache = {}
+
+
+def keep_leak(view, P=None):
+    """Leak-aware keep (LEAK_PENALTY): the variant layer's static keep minus LEAK_LAMBDA x leak_of(cards given up),
+    for requests that keep exactly 2 cards; None otherwise (the layer's static default then answers)."""
+    P = P or PARAMS
+    kind = view.get("kind")
+    if kind not in ("discard", "keep", "toss"):
+        return None
+    hole = view.get("hole") or ()
+    n = len(hole)
+    k = view.get("k")
+    k = k if isinstance(k, int) and not isinstance(k, bool) else (2 if kind == "keep" else 1)
+    keep_n = k if kind == "keep" else n - k
+    if keep_n != 2 or n < 3 or _VDEFAULTS is None:
+        return None
+    lam = float(P["LEAK_LAMBDA"])
+    eps = P["REVEAL_EPS"]
+    return _VDEFAULTS.keep_with_penalty(view, lambda kept, out: lam * leak_of(out, eps))
+
+
+try:
+    _VDEFAULTS = TABLES_LOADER._submodule("defaults") if TABLES_LOADER is not None else None
+except BaseException:         # noqa: BLE001 - no layer: keep_leak answers None (the static default)
+    _VDEFAULTS = None
+
+# Per-instance keep settings for rehearsal A/Bs only: the shell passes one module-level policy, so a Brain whose
+# params override LEAK_PENALTY / KEEP_BOARD_AWARE registers its params under its dealt hole cards at its decisions,
+# and keep_dispatch looks them up by the request's hole cards. Production (no override) never registers.
+_KEEP_OWNER = {}
+
+
+def keep_dispatch(view):
+    """The keep policy the shell passes to the variant layer: leak-aware, board-aware or None (static)."""
+    try:
+        P = _KEEP_OWNER.get(frozenset(view.get("hole") or ()), PARAMS)
+    except TypeError:
+        P = PARAMS
+    if P["LEAK_PENALTY"]:
+        return keep_leak(view, P)
+    if P["KEEP_BOARD_AWARE"]:
+        return keep_policy(view)
+    return None
+
+
+KEEP_POLICY = keep_dispatch if (PARAMS["KEEP_BOARD_AWARE"] or PARAMS["LEAK_PENALTY"]) else None   # shell -> respond
 
 
 def bounty_bonus(v, exclude=-1):
@@ -1021,6 +1271,10 @@ class Brain:
         self.bf_computed = 0
         self.n_jam_gated = 0      # v1+ first-in jam decisions that used the gated (caller-side) ICM formula
         self.n_jam_hero = 0       # ... that used the default hero-only tightening
+        self.rev = RevealTracker()  # revealed discards / tosses this hand (observe "discard" events)
+        self.n_reveal_adj = [0, 0]  # USE_REVEALED: postflop calls moved down / up a class (diagnostic)
+        self.keep_override = P["LEAK_PENALTY"] != PARAMS["LEAK_PENALTY"] or \
+            P["KEEP_BOARD_AWARE"] != PARAMS["KEEP_BOARD_AWARE"]          # A/B only: register for keep_dispatch
 
     # ------------------------------------------------------------------ events (untimed in the kit)
     def observe(self, ev):
@@ -1044,6 +1298,13 @@ class Brain:
             si = STREET_INDEX.get(ev.get("street"), tr.street)
             if ev.get("hand_no") == tr.hand_no and si > tr.street:
                 tr.new_street(si)
+        elif t == "discard" or t == "toss":
+            s = ev.get("seat")
+            if isinstance(s, int) and s != self.seat:
+                cs = ev.get("cards")
+                if cs is None:
+                    cs = (ev.get("card"),)
+                self.rev.add(ev.get("hand_no"), s, cs)
 
     # ------------------------------------------------------------------ bubble factors
     def bf(self, i, j):
@@ -1184,6 +1445,10 @@ class Brain:
             if s > 0:
                 nl += 1
         self.n_live = nl
+        if self.keep_override and len(v.hole) > 2:
+            if len(_KEEP_OWNER) > 256:
+                _KEEP_OWNER.clear()
+            _KEEP_OWNER[frozenset(v.hole)] = self.P
         if v.street == 0:
             return self.preflop(v)
         return self.postflop(v)
@@ -1475,6 +1740,8 @@ class Brain:
         b = self.bf(me, bettor) if (self.icm_on and big) else 1.0
         raised_me = bets[me] > 0
         light = ver >= 2 and self.seat_type(bettor) in P["LIGHT_CALL_TYPES"]
+        if P["USE_REVEALED"] and 0 < cls < 3 and self.rev.hand_no == v.hand_no and bettor in self.rev.cards:
+            cls = self.reveal_class(v, bettor, cls)
         if cls == 3:
             if big and b >= P["BF_RAISE3_MAX"]:
                 return ("call",)
@@ -1495,6 +1762,33 @@ class Brain:
         if ec == 1 and not raised_me and to_call <= P["CALL1_MAX_POT"] * pot and not big:
             return ("call",)
         return ("fold",)
+
+    def reveal_class(self, v, j, cls):
+        """USE_REVEALED: our call class against bettor j moved one step by the reader model's read of j's revealed
+        discards (reveal_delta): down when the read makes j REVEAL_T more likely to be ahead than an unread hand,
+        a weak pair up to top-pair calls when it makes j REVEAL_T less likely. Cached per (seat, board, class)."""
+        rv = self.rev
+        key = (j, len(v.board), cls)
+        d = rv.cache.get(key)
+        if d is None:
+            lik = rv.lik.get(j)
+            if lik is None:
+                lik = rv.lik[j] = reveal_lik([c >> 2 for c in rv.cards[j]], self.P["REVEAL_EPS"])
+            nb = len(v.board)
+            rows = rv.rows.get(nb)
+            if rows is None:
+                bset = set(v.board)
+                dead = [c for cs in rv.cards.values() for c in cs if c not in bset]
+                rows = rv.rows[nb] = reveal_board(v.hole, v.board, dead)
+            d = rv.cache[key] = reveal_delta_rows(rows, lik, cls)
+        t = self.P["REVEAL_T"]
+        if d >= t:
+            self.n_reveal_adj[0] += 1
+            return cls - 1
+        if d <= -t and cls == 1:
+            self.n_reveal_adj[1] += 1
+            return 2
+        return cls
 
     def bet(self, v, to):
         """Bet or raise to `to` (street total); all-in if it would commit COMMIT_FRAC of our chips."""
