@@ -129,6 +129,9 @@ PARAMS = {
     "BF_RAISE3_MAX": 2.0,         # v1+: big class-3 spot: just call when BF >= this
     "COMMIT_FRAC": 0.45,          # a bet or raise that puts in >= this share of my chips goes all-in instead
     "CBET_AIR_UNKNOWN": 0.0,      # air c-bet frequency vs a seat with no fold evidence (P10: default off)
+    "STAB_AIR": 0.0,              # red team (REDTEAM notes): heads-up, checked to us by the lone opponent: bet
+                                  # CBET_FRAC x pot with air / weak hands this often (0 = off, no random draw)
+    "BARREL_AIR": 0.0,            # red team: heads-up turn / river as the preflop raiser: bet air this often (0 = off)
     "POSTFLOP_ENGINE": False,     # True: hold'em postflop decisions by bot/postflop.py (equity of our hand class vs an
                                   # action-conditioned range, precomputed by tools/make_postflop_tables.py; lookups
                                   # only); False = the hand-class rules below (byte-identical). POSTFLOP_ENGINE notes
@@ -198,6 +201,40 @@ PARAMS = {
     "JAMFOLD_WIDEN": 1.6,         # x jam range when every seat behind is jam-tight (E15, payout-independent)
     "J_FLOOR": {"maniac": 0.50, "loose": 0.35, "stealer": 0.40},   # range floors of typed raisers (no caller floor)
     "REJAM_PRIOR": 0.06,          # P5: range of a re-jam over a raise (unless the seat is a typed maniac)
+    # ---- red-team hardening (REDTEAM notes; every switch off by default = the shipped v2, byte-identical)
+    "REJAM_LEARN": False,         # True: a re-raiser's assumed range is at least its own shrunk re-raise rate over
+                                  # completed hands (RANGE_MODEL's 3-bet counters: faced one non-all-in raise, re-raised),
+                                  # with no RM_CAP ceiling, so a seat that re-jams any two is priced as wide as it plays
+    "REJAM_LEARN_PRIOR": (0.06, 6),   # (mean, pseudo-opportunities) of that shrinkage (DOCTRINE notes 2.8 item 1)
+    "REJAM_PRIOR_BY_LEFT": None,  # None = off; else {players left: re-jam prior} replacing REJAM_PRIOR (e.g. {2: 0.20,
+                                  # 3: 0.12}, DOCTRINE notes 2.8 item 2)
+    "BB_DEFEND_PCT_HU": None,     # None = off; else the BB defence fraction when two players are left (DOCTRINE notes 2.8 (3))
+    "REJAM_JAMZONE_BB": None,     # None = off; else first-in at PF_DEPTH_BB < S <= this: jam/fold instead of open/fold
+                                  # when a seat that can call is a learned re-jammer (shrunk re-raise rate >= REJAM_T
+                                  # over >= REJAM_MIN_OBS re-raise chances)
+    "REJAM_T": 0.15,
+    "REJAM_MIN_OBS": 3,
+    "RESTEAL_WIDE_BB": 25.0,      # None = off; else facing one non-all-in open at S <= this (bb) from a seat whose
+                                  # range-model open ratio is >= RESTEAL_WIDE_RATIO (an observed wide opener): play the
+                                  # committed rule (re-jam the top RESTEAL_MULT x C, BB defence, else fold) instead of
+                                  # the deep 3-bet / flat / fold rule. ON 2026-11-05 together with PROBE_BET_FIRST 1.0
+                                  # (REDTEAM notes: the pair passed the apply rule on seed 9404, 8,000 tables: AI_MIX
+                                  # +0.046, AI_ONLY +0.013 [-0.009, +0.035], STRONG +0.011, T6_like +0.021, 7 x ai_aggro
+                                  # +0.063, 7 x lag_aggro +0.120; alone it failed AI_ONLY on seed 9402). It cuts the
+                                  # exploitability of v2 by a loose-aggressive copy of itself from +0.39 to +0.24
+    "RESTEAL_WIDE_RATIO": 1.4,
+    "PROBE_LEARN": False,         # True: a seat that bets into unbet postflop streets often (shrunk rate >= PROBE_T
+                                  # over >= PROBE_MIN_OBS chances) gets the light-call treatment (LIGHT_CALL_TYPES) and
+                                  # our air calls its small flop bets (DOCTRINE notes 2.10 (1))
+    "PROBE_PRIOR": (0.45, 6),
+    "PROBE_T": 0.65,
+    "PROBE_MIN_OBS": 4,
+    "PROBE_AIR_CALL_POT": 0.0,    # with PROBE_LEARN: air calls a flop bet up to this x pot (incl. the bet; 0 = never)
+    "PROBE_BET_FIRST": 1.0,       # 0 = off; else heads-up vs a prober (PROBE_* rate test, independent of PROBE_LEARN),
+                                  # unbet street: bet CBET_FRAC x pot with air / weak hands this often, taking the
+                                  # initiative instead of check-folding into its stab. ON 2026-11-05 as a pair with
+                                  # RESTEAL_WIDE_BB 25 (alone it failed the apply rule: seed 9404 AI_ONLY / STRONG /
+                                  # T6_like lower bounds -0.020 / -0.011 / -0.015)
     "OPEN_PRIOR": None,           # v2 range prior of a first-in opener by players behind (None = OPEN_PCT)
     "OPEN_K_UNKNOWN": 3,          # v2: players-behind assumed for a raiser that was not the first-in opener
     "LATE_OPEN_FLOOR": 0.35,      # P6: range floor of a small late open (<= LATE_SEATS behind, raise <=
@@ -1100,7 +1137,7 @@ class SeatStat:
                  "late_opp", "late_open", "post_faced", "post_call", "post_fold", "flop_faced", "flop_fold",
                  "vol_ever", "vol_hand",
                  "rm_jam_n", "rm_jam_hit", "rm_jam_exp", "rm_open_n", "rm_open_hit", "rm_open_exp",
-                 "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp")
+                 "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp", "probe_opp", "probe_bet")
 
     def __init__(self):
         self.pf_dec = self.pf_vol = self.pf_fold = 0
@@ -1121,7 +1158,7 @@ class SeatStat:
         self.rm_3b_n = self.rm_3b_hit = 0
         self.rm_cj_n = self.rm_cj_hit = 0
         self.rm_cj_exp = 0.0
-
+        self.probe_opp = self.probe_bet = 0      # postflop chances to bet into an unbet street, and bets made
 
 
 def preflop_order(n, alive, sb_seat, bb_seat):
@@ -1306,6 +1343,10 @@ class HandTracker:
                 else:
                     self.callers_since_raise += 1
         else:
+            if cur == 0 and (kind == "check" or kind == "raise"):
+                st.probe_opp += 1
+                if kind == "raise":
+                    st.probe_bet += 1
             if cur > before:
                 st.post_faced += 1
                 if kind == "call" or kind == "raise":
@@ -1636,6 +1677,40 @@ class Brain:
         st = self.stats[j]
         return self.rm_ratio(st.rm_cj_hit, st.rm_cj_exp, self.P["RM_A_CALL"])
 
+    def rejam_prior(self):
+        """REJAM_PRIOR, or its players-left override (REJAM_PRIOR_BY_LEFT)."""
+        P = self.P
+        by = P["REJAM_PRIOR_BY_LEFT"]
+        if by:
+            x = by.get(self.n_live)
+            if x is not None:
+                return x
+        return P["REJAM_PRIOR"]
+
+    def rejam_rate(self, j):
+        """Seat j's shrunk re-raise rate facing one non-all-in raise (completed hands; RANGE_MODEL counters)."""
+        st = self.stats[j]
+        m, k = self.P["REJAM_LEARN_PRIOR"]
+        return (st.rm_3b_hit + k * m) / (st.rm_3b_n + k)
+
+    def rejam_learned(self, j, J):
+        """REJAM_LEARN: a re-raiser's range is at least its own shrunk re-raise rate."""
+        if not self.P["REJAM_LEARN"] or not self.rm:
+            return J
+        r = self.rejam_rate(j)
+        return r if r > J else J
+
+    def rejammer(self, j):
+        st = self.stats[j]
+        return st.rm_3b_n >= self.P["REJAM_MIN_OBS"] and self.rejam_rate(j) >= self.P["REJAM_T"]
+
+    def is_prober(self, j):
+        """Seat j bets into unbet postflop streets at a shrunk rate >= PROBE_T over >= PROBE_MIN_OBS chances."""
+        P = self.P
+        st = self.stats[j]
+        m, k = P["PROBE_PRIOR"]
+        return st.probe_opp >= P["PROBE_MIN_OBS"] and (st.probe_bet + k * m) / (st.probe_opp + k) >= P["PROBE_T"]
+
     def jam_range_of(self, j, J_formula, is_rejam):
         """Estimated range of seat j's jam. v0/v1: the first-in formula at its spot (also for re-jams, as tested);
         v2: re-jams get REJAM_PRIOR (P5); a typed maniac's range is its own shrunk jam rate (E10); loose floor.
@@ -1644,9 +1719,11 @@ class Brain:
             return J_formula
         P = self.P
         t = self.seat_type(j)
-        J = P["REJAM_PRIOR"] if is_rejam else J_formula
+        J = self.rejam_prior() if is_rejam else J_formula
         if self.rm:
             J *= self.rm_jam_ratio(j, is_rejam)
+            if is_rejam:
+                J = self.rejam_learned(j, J)
             if J > 1.0:
                 J = 1.0
         if t == "maniac":
@@ -1733,7 +1810,9 @@ class Brain:
                     all(self.is_folder(j) for j in behind):
                 return ("raise", v.min_to)                                # E09: free steal (min-raise any two)
             S = min(tot[me], max(tot[j] for j in callers)) / bb
-            if S <= P["PF_DEPTH_BB"]:
+            jz = P["REJAM_JAMZONE_BB"]
+            if S <= P["PF_DEPTH_BB"] or (jz is not None and ver >= 2 and self.rm and S <= jz and
+                                         any(self.rejammer(j) for j in callers)):
                 pot_w = v.pot if (v.bounty is None or "jam" not in P["BOUNTY_PARTS"]) else bounty_pot(v, v.pot)
                 S_eq = equiv_depth(S, pot_w / bb, P)                      # antes and limps = more dead money
                 J = jam_pct(S_eq, len(callers), P["JAM_FIT"]) * P["JAM_MULT"]
@@ -1765,8 +1844,14 @@ class Brain:
         if v.to_call <= 0:
             return ("check",)
         committed = v.to_call >= P["COMMIT_TO_CALL_FRAC"] * tot[me] or S <= P["PF_DEPTH_BB"]
+        rw = P["RESTEAL_WIDE_BB"]
+        if rw is not None and not committed and ver >= 2 and self.rm and tr.pf_raises == 1 and S <= rw and \
+                self.rm_open_ratio(r) >= P["RESTEAL_WIDE_RATIO"]:
+            committed = True
         late_small = False
         raise_top, flat_top, bb_def = P["RAISE_TOP"], P["FLAT_TOP"], P["BB_DEFEND_PCT"]
+        if P["BB_DEFEND_PCT_HU"] is not None and self.n_live == 2:
+            bb_def = P["BB_DEFEND_PCT_HU"]
         if ver >= 2 and self.rm:
             O, late_small, sc = self.open_range_rm(r, v)
             if sc != 1.0:
@@ -1872,7 +1957,7 @@ class Brain:
             if fl is not None:
                 O = max(O, fl)
         else:
-            O = P["REJAM_PRIOR"]
+            O = self.rejam_prior()
             if t == "maniac":
                 O = max(O, P["J_FLOOR"]["maniac"])
         return O, late_small
@@ -1895,7 +1980,7 @@ class Brain:
             if fl is not None:
                 O = max(O, fl)
         else:
-            O = P["REJAM_PRIOR"] * self.rm_jam_ratio(r, True)
+            O = self.rejam_learned(r, self.rejam_prior() * self.rm_jam_ratio(r, True))
             if t == "maniac":
                 O = max(O, P["J_FLOOR"]["maniac"])
         if O > 1.0:
@@ -2002,12 +2087,29 @@ class Brain:
             if hu and v.street == 1 and tr.pf_aggr == me and P["CBET_AIR_UNKNOWN"] > 0 and \
                     self.rng.random() < P["CBET_AIR_UNKNOWN"]:
                 return self.bet(v, cur + max(v.bb, int(P["CBET_FRAC"] * pot)))
+            if hu and P["PROBE_BET_FIRST"] > 0 and ver >= 2 and self.is_prober(opps[0]) and \
+                    self.rng.random() < P["PROBE_BET_FIRST"]:
+                return self.bet(v, cur + max(v.bb, int(P["CBET_FRAC"] * pot)))
+            if hu and (P["STAB_AIR"] > 0 or P["BARREL_AIR"] > 0):
+                # red-team knobs (REDTEAM notes; both 0 = off, no random draw): bet air when the lone opponent
+                # checked this street (STAB_AIR), or on the turn / river as the preflop raiser (BARREL_AIR)
+                j = opps[0]
+                ss = v.street_starts
+                chk = v.street < len(ss) and any(e[0] == j and e[1] == "check" for e in v.history[ss[v.street]:])
+                if (chk and P["STAB_AIR"] > 0 and self.rng.random() < P["STAB_AIR"]) or \
+                        (v.street >= 2 and tr.pf_aggr == me and P["BARREL_AIR"] > 0 and
+                         self.rng.random() < P["BARREL_AIR"]):
+                    return self.bet(v, cur + max(v.bb, int(P["CBET_FRAC"] * pot)))
             return ("check",)
         bettor = max(opps, key=lambda j: bets[j])
         big = to_call >= P["BIG_CALL_FRAC"] * stack
         b = self.bf(me, bettor) if (self.icm_on and big) else 1.0
         raised_me = bets[me] > 0
         light = ver >= 2 and self.seat_type(bettor) in P["LIGHT_CALL_TYPES"]
+        prober = False
+        if P["PROBE_LEARN"] and ver >= 2 and not light:
+            prober = self.is_prober(bettor)
+            light = prober
         if P["USE_REVEALED"] and 0 < cls < 3 and self.rev.hand_no == v.hand_no and bettor in self.rev.cards:
             cls = self.reveal_class(v, bettor, cls)
         if cls == 3:
@@ -2028,6 +2130,9 @@ class Brain:
                     return ("call",)
             return ("fold",)
         if ec == 1 and not raised_me and to_call <= P["CALL1_MAX_POT"] * pot and not big:
+            return ("call",)
+        if prober and cls == 0 and v.street == 1 and not raised_me and not big and \
+                to_call <= P["PROBE_AIR_CALL_POT"] * pot:
             return ("call",)
         return ("fold",)
 

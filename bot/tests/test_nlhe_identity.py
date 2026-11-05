@@ -36,7 +36,9 @@ def record(n=N_DECISIONS):
               # defaults are covered by test_tuning.py
               "TUNE_BY_PAYOUT": False, "CALLER_CAP_JAM_EVIDENCE": False,
               # the range model (RANGE_MODEL notes) pinned off for the same reason, whatever its shipped default
-              "RANGE_MODEL": False}
+              "RANGE_MODEL": False,
+              # the red-team hardening pair (REDTEAM notes) pinned off for the same reason
+              "RESTEAL_WIDE_BB": None, "PROBE_BET_FIRST": 0.0}
 
     def ours(version):
         def make(seat, cfg):
