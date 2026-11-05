@@ -257,6 +257,15 @@ PARAMS = {
     "ICM_NASH_CALL_DEV": 1.25,    # v2: when the jammer's estimated range (typing / range model, anchored on its
                                   # equilibrium jam range) is more than this factor wider or narrower than that range,
                                   # the call is priced by call_jam (equity vs the estimate) instead of the call set
+    # ---- fragility probe (FRAGILITY notes): amounts only, never the action type, always inside the legal bounds
+    "SIZING_PROBE": False,        # True: a non-all-in raise / bet of ours moves, inside PROBE_BAND, to a size that
+                                  # hour-old opponent code mishandles (PROBE_STYLE); folds, checks, calls and all-ins
+                                  # are untouched, and the result stays below the ALLIN_SNAP threshold (so the adapter
+                                  # never turns it into an all-in)
+    "PROBE_STYLE": "odd",         # "odd": the nearest size >= the chosen one (and >= the minimum raise) that is odd,
+                                  # not a multiple of 5 and not a multiple of the big blind; "min": the exact minimum
+                                  # raise when the chosen size is within PROBE_BAND of it, else "odd"
+    "PROBE_BAND": 0.05,           # sizing band treated as EV-flat: up to this share of the size (at least 4 chips)
 }
 
 RANKS = "23456789TJQKA"
@@ -1588,6 +1597,7 @@ class Brain:
         self.types = {}
         self.open_prior = P["OPEN_PRIOR"] or P["OPEN_PCT"]
         self.rm = bool(P["RANGE_MODEL"]) and self.version >= 2    # range model (v2 only; the v0 fallback skips it)
+        self.probe = bool(P["SIZING_PROBE"])     # fragility probe: raise amounts only (any version, fallback too)
         self.guard_trips = 0      # decisions where the guard stopped optional work (diagnostic)
         self.bf_computed = 0
         self.n_jam_gated = 0      # v1+ first-in jam decisions that used the gated (caller-side) ICM formula
@@ -1822,9 +1832,38 @@ class Brain:
             if len(_KEEP_OWNER) > 256:
                 _KEEP_OWNER.clear()
             _KEEP_OWNER[frozenset(v.hole)] = self.P
-        if v.street == 0:
-            return self.preflop(v)
-        return self.postflop(v)
+        d = self.preflop(v) if v.street == 0 else self.postflop(v)
+        if self.probe and d[0] == "raise":
+            return ("raise", self.probe_size(v, d[1]))
+        return d
+
+    def probe_size(self, v, t):
+        """SIZING_PROBE (FRAGILITY notes): the raise-to total `t` moved inside the EV-flat band to an amount that
+        hour-old opponent code mishandles (odd, not a multiple of 5 or of the big blind; or the exact minimum raise
+        with PROBE_STYLE "min"). Never below the minimum raise, never at or above the adapter's all-in snap point and
+        never above the maximum, so the action type cannot change; returns `t` itself when no such amount exists."""
+        t = int(t)
+        lo, hi = v.min_to, v.max_to
+        if hi <= 0 or lo <= 0:
+            return t                                   # raising is not legal: the adapter calls / checks anyway
+        P = self.P
+        cap = P["ALLIN_SNAP"] * hi
+        if t >= cap or t >= hi:
+            return t                                   # the adapter makes this an all-in: no amount freedom
+        base = t if t > lo else lo
+        band = int(P["PROBE_BAND"] * base)
+        if band < 4:
+            band = 4
+        if P["PROBE_STYLE"] == "min" and base <= lo + band:
+            return lo
+        bb = v.bb if v.bb > 0 else 1
+        c = base
+        top = base + band
+        while c <= top:
+            if c & 1 and c % 5 and c % bb and c < cap and c <= hi:
+                return c
+            c += 1
+        return t
 
     def decide_fallback(self, v, t0):
         """P15: the v0 decision (no ICM, no typing) for the same view. The shell calls this only when decide()
