@@ -39,10 +39,12 @@ def record(n=N_DECISIONS):
               "RANGE_MODEL": False,
               # the 2026-11-04 pass-2 tuning switches (TUNING_LOG notes "pass 2") pinned to the built rules too
               "JAM_HERO_EXP": -2.5, "JAM_OPP_EXP_DEFAULT": None, "MIN_JAMS_FACED_TIGHT": 4,
-              "REJAM_LEARN": False, "REJAM_BY_LEFT": False, "BB_DEFEND_PCT_HU": None,
+              "REJAM_LEARN": False, "BB_DEFEND_PCT_HU": None,
               "CALLJAM_PRIOR": None, "SB_WIDEN_MIN_JAMS": None, "T_CALLER_CALLJAM": 0.50,
               # the ICM push/fold tables (ICM_NASH notes) pinned off for the same reason
-              "ICM_NASH": False}
+              "ICM_NASH": False,
+              # the red-team hardening pair (REDTEAM notes) pinned off for the same reason
+              "RESTEAL_WIDE_BB": None, "PROBE_BET_FIRST": 0.0}
 
     def ours(version):
         def make(seat, cfg):

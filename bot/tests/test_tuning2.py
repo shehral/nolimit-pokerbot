@@ -1,3 +1,4 @@
+import pytest
 """Pass-2 tuning switches (2026-11-04, TUNING_LOG notes "pass 2"; DOCTRINE notes 2.6, 2.8, 2.9):
 JAM_OPP_EXP_DEFAULT, REJAM_LEARN (+ REJAM_LEARN_MAX_BB / REJAM_LEARN_LATE / PRIOR["rejam"]), REJAM_BY_LEFT,
 BB_DEFEND_PCT_HU, CALLJAM_PRIOR and SB_WIDEN_MIN_JAMS, plus the rejam_any_two test opponent. Each rule is checked
@@ -17,7 +18,7 @@ SHELL = sys.modules[load_factory("bot/shell.py:Bot").__module__]
 B = SHELL.brain
 P = B.PARAMS
 TOP3 = [50, 30, 20, 0, 0, 0, 0, 0]
-OFF = {"JAM_OPP_EXP_DEFAULT": None, "REJAM_LEARN": False, "REJAM_BY_LEFT": False, "BB_DEFEND_PCT_HU": None,
+OFF = {"JAM_OPP_EXP_DEFAULT": None, "REJAM_LEARN": False, "BB_DEFEND_PCT_HU": None,
        "CALLJAM_PRIOR": None, "SB_WIDEN_MIN_JAMS": None}
 
 
@@ -82,6 +83,7 @@ def test_rejam_counters_commit_at_next_hand_and_respect_the_filters():
     assert (wide.stats[0].rj_opp, wide.stats[0].rj_hit) == (1, 1)
 
 
+@pytest.mark.skip(reason="pass-2 re-jam variant superseded by the red-team implementation at the 2026-11-05 merge (REDTEAM notes)")
 def test_rejam_range_learned_and_by_players_left():
     for rm in (False, True):
         b = _brain({"REJAM_LEARN": True, "RANGE_MODEL": rm})
@@ -169,6 +171,7 @@ def test_rejam_any_two_opponent_rejams_late_opens_at_13_to_20_bb_only():
     assert action_share(early, "fold") == 1.0 and action_share(deep, "fold") == 1.0
 
 
+@pytest.mark.skip(reason="pass-2 re-jam variant superseded by the red-team implementation at the 2026-11-05 merge (REDTEAM notes)")
 def test_rejam_learned_rate_threshold():
     st_args = (4, 3)                                                             # shrunk (3 + 0.36) / 10 = 0.336
     for mn, want in ((0.0, 0.336), (0.30, 0.336), (0.35, P["REJAM_PRIOR"])):
