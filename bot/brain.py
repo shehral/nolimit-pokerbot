@@ -73,6 +73,8 @@ PARAMS = {
     "JAM_HERO_EXP": -2.5,         # default jam side: jam% *= mean BF(me, caller) ** this (P2, review's best response)
     "JAM_OPP_EXP": 2.0,           # gated jam side (every possible caller observed jam-tight): * mean BF(caller, me)**this
     "JAM_HERO_EXP_GATED": -1.5,   # ... * mean BF(me, caller) ** this (the tested formula)
+    "JAM_OPP_EXP_DEFAULT": None,  # None = off (built rule); else the default (ungated) jam side also multiplies by
+                                  # mean BF(caller, me) ** this (DOCTRINE notes 2.6 (b): 1.0 = half the gated strength)
     # ---- latency
     "GUARD_NS": 200_000,          # own-clock budget per decision (ns); optional work (BFs) must fit inside it
     #                               (250,000 until the 2026-11-03 hardening: the BF start limit GUARD - 3 x cost left
@@ -173,7 +175,8 @@ PARAMS = {
     },
     # ---- v2 typing (shrinkage: estimate = (hits + k * mean) / (n + k))
     "PRIOR": {"vol": (0.30, 12), "jam": (0.05, 10), "calljam": (0.35, 6), "post_call": (0.45, 8),
-              "flop_fold": (0.30, 6), "late_open": (0.25, 8)},
+              "flop_fold": (0.30, 6), "late_open": (0.25, 8), "rejam": (0.06, 6)},
+    "CALLJAM_PRIOR": None,        # None = PRIOR["calljam"] as above; else that prior's mean (same strength) (DOCTRINE notes 2.9)
     "OE_PRIOR": 0.5,              # jam-call observed/expected ratio shrinkage, in expected-call units
     "MIN_OBS_TYPE": 6,            # preflop decisions before a seat gets any type other than folder ("unknown")
     "MIN_OBS_FOLDER": 8,          # preflop decisions with 0 voluntary chips before a seat is a folder
@@ -192,17 +195,27 @@ PARAMS = {
                                   # (TUNING_LOG, seed 202): STRONG +0.009, T6_like +0.013, T1_like +0.009, AI_ONLY
                                   # +0.027, AI_MIX +0.011 [-0.007, +0.030]; False = the built v2 rule
     "SB_WIDEN": 1.6,              # x jam range when the only seat behind is a folder or folds to jams (P1)
+    "SB_WIDEN_MIN_JAMS": None,    # jams faced before the widen may read the BB's jam-call rate (None = MIN_JAMS_FACED)
     "SB_WIDEN_MARGIN": 0.05,      # widen only if the BB's shrunk jam-call rate < break-even(S) - this
     "SB_WIDEN_BE": (0.33, 0.018, 0.10),   # break-even jam-call rate of the widen: 0.33 at <= 10 bb, minus 0.018 per bb
                                           # above 10 (24% at 15 bb, review's sb_widen_ev), floored at 0.10
     "JAMFOLD_WIDEN": 1.6,         # x jam range when every seat behind is jam-tight (E15, payout-independent)
     "J_FLOOR": {"maniac": 0.50, "loose": 0.35, "stealer": 0.40},   # range floors of typed raisers (no caller floor)
     "REJAM_PRIOR": 0.06,          # P5: range of a re-jam over a raise (unless the seat is a typed maniac)
+    "REJAM_LEARN": False,         # DOCTRINE notes 2.8 (1): per-seat re-jam counters (all-in re-raises over a single non-all-in
+                                  # raise, completed hands only); re-jam range = max(prior, shrunk rate, PRIOR["rejam"])
+    "REJAM_LEARN_MAX_BB": 25.0,   # ... a chance only at effective depth <= this (bb; None = any depth: re-jams are
+                                  # the natural reply only when short, deeper chances would dilute the rate) ...
+    "REJAM_LEARN_LATE": True,     # ... and only facing a late open (opener had <= LATE_SEATS behind: a steal)
+    "REJAM_LEARN_MIN": 0.0,       # ... and the learned rate replaces the prior only once it reaches this
+    "REJAM_BY_LEFT": False,       # DOCTRINE notes 2.8 (2): the re-jam prior is REJAM_PRIOR_BY_LEFT[players left] when listed
+    "REJAM_PRIOR_BY_LEFT": {2: 0.20, 3: 0.12},
     "OPEN_PRIOR": None,           # v2 range prior of a first-in opener by players behind (None = OPEN_PCT)
     "OPEN_K_UNKNOWN": 3,          # v2: players-behind assumed for a raiser that was not the first-in opener
     "LATE_OPEN_FLOOR": 0.35,      # P6: range floor of a small late open (<= LATE_SEATS behind, raise <=
                                   #     BB_DEFEND_MAX_RAISE_BB)
     "BB_DEFEND_PCT": 0.30,        # P6: BB flats this top fraction (call order) vs a late small raise ...
+    "BB_DEFEND_PCT_HU": None,     # None = BB_DEFEND_PCT heads-up too; else the heads-up value (DOCTRINE notes 2.8 (3))
     "BB_DEFEND_MAX_RAISE_BB": 3.0,  # ... of at most this many bb ...
     "BB_DEFEND_MAX_FRAC": 0.15,   # ... when the call costs at most this share of my chips
     "VALUE_FRAC_CALLER": 1.00,    # value bet vs a typed caller (E16)
@@ -1100,7 +1113,7 @@ class SeatStat:
                  "late_opp", "late_open", "post_faced", "post_call", "post_fold", "flop_faced", "flop_fold",
                  "vol_ever", "vol_hand",
                  "rm_jam_n", "rm_jam_hit", "rm_jam_exp", "rm_open_n", "rm_open_hit", "rm_open_exp",
-                 "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp")
+                 "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp", "rj_opp", "rj_hit")
 
     def __init__(self):
         self.pf_dec = self.pf_vol = self.pf_fold = 0
@@ -1121,6 +1134,8 @@ class SeatStat:
         self.rm_3b_n = self.rm_3b_hit = 0
         self.rm_cj_n = self.rm_cj_hit = 0
         self.rm_cj_exp = 0.0
+        # REJAM_LEARN: chances to re-jam over one non-all-in raise / all-in re-raises there (completed hands only)
+        self.rj_opp = self.rj_hit = 0
 
 
 
@@ -1145,7 +1160,7 @@ class HandTracker:
     __slots__ = ("P", "stats", "n", "hand_no", "street", "n_done", "bb", "ante", "start", "stake", "contrib", "bets",
                  "folded", "allin", "pre", "pos", "bb_seat", "cur", "pf_raises", "last_raiser", "raise_to",
                  "open_k", "open_seat", "limpers", "limper_seats", "callers_since_raise", "jam", "jam_responders",
-                 "pf_aggr", "posted", "jam_ranges", "rm_pend")
+                 "pf_aggr", "posted", "jam_ranges", "rm_pend", "rj_pend")
 
     def __init__(self, P, stats, n):
         self.P = P                        # the brain's PARAMS and per-seat stats (no back-reference to the brain,
@@ -1153,12 +1168,20 @@ class HandTracker:
         self.n = n
         self.hand_no = None
         self.rm_pend = None               # RANGE_MODEL: this hand's evidence per seat, committed at the next hand
+        self.rj_pend = None               # REJAM_LEARN: this hand's (seat, re-jammed) chances, committed the same way
         self._reset(None, [0] * n, [False] * n, 0, 1, 20, 0)
 
     def _reset(self, hand_no, start, alive, sb_seat, bb_seat, bb, ante):
         n = self.n
         if self.rm_pend:
             self.rm_commit()
+        if self.rj_pend:
+            stats = self.stats
+            for s, hit in self.rj_pend:
+                stats[s].rj_opp += 1
+                if hit:
+                    stats[s].rj_hit += 1
+            self.rj_pend = None
         self.hand_no = hand_no
         self.street = 0
         self.n_done = 0
@@ -1255,6 +1278,14 @@ class HandTracker:
             unopened = self.pf_raises == 0
             if P["RANGE_MODEL"] and kind != "check":
                 self._rm_evidence(s, kind, unopened, c0)
+            if P["REJAM_LEARN"] and kind != "check" and self.pf_raises == 1 and self.jam is None and \
+                    s != self.last_raiser and self.stake[s] > self.raise_to and \
+                    (P["REJAM_LEARN_MAX_BB"] is None or
+                     min(self.stake[s], self.stake[self.last_raiser]) <= P["REJAM_LEARN_MAX_BB"] * self.bb) and \
+                    (not P["REJAM_LEARN_LATE"] or self.open_k <= P["LATE_SEATS"]):
+                if self.rj_pend is None:
+                    self.rj_pend = []
+                self.rj_pend.append((s, kind == "raise" and self.allin[s]))
             if unopened and kind != "check":
                 st.jam_opp += 1
                 if kind == "raise" and self.allin[s]:
@@ -1435,6 +1466,10 @@ class Brain:
                 if not (params and k in params):    # an explicit override still wins
                     P[k] = val
                     self.tuned[k] = val
+        if P["CALLJAM_PRIOR"] is not None:                # DOCTRINE notes 2.9: presumed jam-call rate of an unknown seat
+            pr = dict(P["PRIOR"])
+            pr["calljam"] = (float(P["CALLJAM_PRIOR"]), pr["calljam"][1])
+            P["PRIOR"] = pr
         self.P = P
         icm_on = P["ICM_ON"]
         if icm_on is None:
@@ -1644,17 +1679,34 @@ class Brain:
             return J_formula
         P = self.P
         t = self.seat_type(j)
-        J = P["REJAM_PRIOR"] if is_rejam else J_formula
+        J = self.rejam_prior() if is_rejam else J_formula
         if self.rm:
             J *= self.rm_jam_ratio(j, is_rejam)
             if J > 1.0:
                 J = 1.0
+        if is_rejam and P["REJAM_LEARN"]:
+            J = max(J, self.rejam_rate(j))
         if t == "maniac":
             st = self.stats[j]
             J = max(J, self.shrunk(st.jam_first, st.jam_opp, "jam"), P["J_FLOOR"]["maniac"])
         elif t == "loose" and not is_rejam:
             J = max(J, P["J_FLOOR"]["loose"])
         return J
+
+    def rejam_prior(self):
+        """Evidence-free range of a re-jam (or re-raise) over a raise: REJAM_PRIOR, or by players left (REJAM_BY_LEFT)."""
+        P = self.P
+        if P["REJAM_BY_LEFT"]:
+            x = P["REJAM_PRIOR_BY_LEFT"].get(self.n_live)
+            if x is not None:
+                return x
+        return P["REJAM_PRIOR"]
+
+    def rejam_rate(self, j):
+        """REJAM_LEARN: seat j's shrunk all-in re-raise rate over its chances (PRIOR["rejam"])."""
+        st = self.stats[j]
+        x = self.shrunk(st.rj_hit, st.rj_opp, "rejam")
+        return x if x >= self.P["REJAM_LEARN_MIN"] else 0.0
 
     # ------------------------------------------------------------------ decide
     def decide(self, v, t0):
@@ -1767,6 +1819,8 @@ class Brain:
         committed = v.to_call >= P["COMMIT_TO_CALL_FRAC"] * tot[me] or S <= P["PF_DEPTH_BB"]
         late_small = False
         raise_top, flat_top, bb_def = P["RAISE_TOP"], P["FLAT_TOP"], P["BB_DEFEND_PCT"]
+        if P["BB_DEFEND_PCT_HU"] is not None and self.n_live == 2:
+            bb_def = P["BB_DEFEND_PCT_HU"]
         if ver >= 2 and self.rm:
             O, late_small, sc = self.open_range_rm(r, v)
             if sc != 1.0:
@@ -1813,6 +1867,8 @@ class Brain:
             self.n_jam_gated += 1
         else:
             J = J * bfh ** P["JAM_HERO_EXP"]
+            if P["JAM_OPP_EXP_DEFAULT"] is not None:                  # DOCTRINE notes 2.6 (b): half-strength caller side
+                J = J * self.bf_mean(me, callers, False) ** P["JAM_OPP_EXP_DEFAULT"]
             self.n_jam_hero += 1
         return J if J < 1.0 else 1.0
 
@@ -1835,7 +1891,10 @@ class Brain:
             b10, slope, bmin = P["SB_WIDEN_BE"]                            # break-even jam-call rate of the widen
             be = b10 - slope * (S - 10.0) if S > 10.0 else b10
             be = max(bmin, be) - P["SB_WIDEN_MARGIN"]
-            if types[0] == "folder" or (st.jam_faced >= P["MIN_JAMS_FACED"]
+            mj = P["SB_WIDEN_MIN_JAMS"]
+            if mj is None:
+                mj = P["MIN_JAMS_FACED"]
+            if types[0] == "folder" or (st.jam_faced >= mj
                                         and self.shrunk(st.jam_called, st.jam_faced, "calljam") < be):
                 mult = P["SB_WIDEN"]
         if all(self.jam_tight(j) for j in callers):
@@ -1872,7 +1931,9 @@ class Brain:
             if fl is not None:
                 O = max(O, fl)
         else:
-            O = P["REJAM_PRIOR"]
+            O = self.rejam_prior()
+            if P["REJAM_LEARN"]:
+                O = max(O, self.rejam_rate(r))
             if t == "maniac":
                 O = max(O, P["J_FLOOR"]["maniac"])
         return O, late_small
@@ -1895,7 +1956,9 @@ class Brain:
             if fl is not None:
                 O = max(O, fl)
         else:
-            O = P["REJAM_PRIOR"] * self.rm_jam_ratio(r, True)
+            O = self.rejam_prior() * self.rm_jam_ratio(r, True)
+            if P["REJAM_LEARN"]:
+                O = max(O, self.rejam_rate(r))
             if t == "maniac":
                 O = max(O, P["J_FLOOR"]["maniac"])
         if O > 1.0:
