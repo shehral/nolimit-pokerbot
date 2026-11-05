@@ -228,6 +228,22 @@ PARAMS = {
     "RM_OPEN_MIN_BB": 15.0,       # ... open evidence only at effective depth >= this (bb; shallower = jam/fold zone)
     "RM_RULE_EXP": 1.0,           # our flat / 3-bet / BB-defence fractions x (posterior / prior raiser range) ** this
     "RM_BB_DEFEND_MAX": 0.50,     # ... with the BB defence fraction capped at this
+    # ---- ICM push/fold equilibrium tables (ICM_NASH notes; bot/icm_nash_tables.py from
+    #      tools/solve_icm_pushfold.py). With 2-4 players left, no antes, ICM on (never under winner-take-all) and a
+    #      payout the tables were solved for (TOP3, LINEAR), first-in jams and calls of a first-in jam (and over-calls
+    #      after one caller) come from the equilibrium sets at the nearest stack bucket instead of the fitted formula x
+    #      bubble-factor heuristic. v2 typing still applies on top of the jam set (see ICM_NASH notes section 4).
+    "ICM_NASH": True,             # ON 2026-11-05 (ICM_NASH notes section 6, seed 5102, 20,000 paired tables TOP3 /
+                                  # 10,000 LINEAR): AI_MIX +0.023 [+0.009, +0.037], STRONG +0.007 [-0.003, +0.016],
+                                  # AI_ONLY +0.016 [-0.001, +0.034], icm_pro +0.015, ai_icm_plan +0.025, ai_poker_pro
+                                  # +0.052 (TOP3); every LINEAR lower bound >= -0.003. False = the BF heuristic
+    "ICM_NASH_PARTS": "jam+call",  # which decisions use the tables: "jam" (first-in jams), "call" (jam calls and
+                                  # over-calls), or both
+    "ICM_NASH_MAX_BB": 20.0,      # only when our effective stack (bb) is at most this
+    "ICM_NASH_CAP_BB": 30.0,      # ... and no live stack exceeds this (bigger stacks would sit in the 20 bb bucket)
+    "ICM_NASH_CALL_DEV": 1.25,    # v2: when the jammer's estimated range (typing / range model, anchored on its
+                                  # equilibrium jam range) is more than this factor wider or narrower than that range,
+                                  # the call is priced by call_jam (equity vs the estimate) instead of the call set
 }
 
 RANKS = "23456789TJQKA"
@@ -1090,6 +1106,70 @@ def icm_pack(pays, n_seats, lo, hi, no_gain=4.0):
     return pk
 
 
+# ===================================== ICM push/fold equilibrium tables (ICM_NASH) =====================================
+def _load_nash():
+    """The ICM push/fold equilibrium tables (bot/icm_nash_tables.py), or None if missing or broken: the switch then
+    has no effect. Never raises."""
+    try:
+        try:
+            from . import icm_nash_tables as nt
+        except ImportError:
+            import importlib.util as ilu
+            import os
+            import sys
+            name = "nolimit_icm_nash_tables"
+            nt = sys.modules.get(name)
+            if nt is None:
+                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icm_nash_tables.py")
+                if not os.path.exists(path):
+                    return None
+                spec = ilu.spec_from_file_location(name, path)
+                nt = ilu.module_from_spec(spec)
+                spec.loader.exec_module(nt)
+                sys.modules[name] = nt
+        nt.lookup(2, nt.KINDS[0], (10.0, 10.0), ("push", 0))       # smoke check: raises if the data is broken
+        return nt
+    except Exception:
+        return None
+
+
+_NT = _load_nash()
+_NL_COMB = [combos(lab) for lab in _T.EQ_LABELS.split()]   # the tables' class order (NLHE, bot_tables.EQ_LABELS)
+_MASK_PCT = {}        # 169-bit set -> combo share (a pure function of the table data)
+
+
+def mask_pct(mask):
+    """Combo share of a 169-bit class set."""
+    v = _MASK_PCT.get(mask)
+    if v is None:
+        tot = 0
+        c = 0
+        m = mask
+        while m:
+            if m & 1:
+                tot += _NL_COMB[c]
+            m >>= 1
+            c += 1
+        v = tot / 1326.0
+        if len(_MASK_PCT) < 100_000:
+            _MASK_PCT[mask] = v
+    return v
+
+
+def nash_kind(pays):
+    """Payout kind of the equilibrium tables whose first 4 places equal this payout's, else None. The tables are
+    used only with at most 4 players left, whose ICM depends on places 1-4 alone (so a 4-seat test table with a
+    truncated payout list, or any payout sharing the top 4, gets the same tables)."""
+    if _NT is None:
+        return None
+    p = pad_payouts(pays, 8)[:4]
+    for k in _NT.KINDS:
+        q = pad_payouts(_NT.PAYOUTS[k], 8)[:4]
+        if all(abs(a - b) < 1e-6 for a, b in zip(p, q)):
+            return k
+    return None
+
+
 # ===================================== per-seat statistics and the hand tracker =====================================
 RM_FIELDS = ("rm_jam_n", "rm_jam_hit", "rm_jam_exp", "rm_open_n", "rm_open_hit", "rm_open_exp",
              "rm_3b_n", "rm_3b_hit", "rm_cj_n", "rm_cj_hit", "rm_cj_exp")
@@ -1446,6 +1526,19 @@ class Brain:
         if self.icm_on:
             self.icm, self.bf_table, self.bf_cost_ns = icm_pack(self.pays, n, P["BF_MIN"], P["BF_MAX"],
                                                                 P["BF_NO_GAIN"])
+        # ICM_NASH (ICM_NASH notes): equilibrium tables for this payout, only with ICM on (so never under
+        # winner-take-all, which stays on the chip-EV formula), the built-in NLHE classes and a solved payout kind
+        self.nash_kind = None
+        if P["ICM_NASH"] and self.icm_on and _SEAM is None and not is_wta(self.pays):
+            k = nash_kind(self.pays)
+            if k is not None and k != "WTA":
+                self.nash_kind = k
+        parts = str(P["ICM_NASH_PARTS"])
+        self.nash_jam = self.nash_kind is not None and "jam" in parts
+        self.nash_call_on = self.nash_kind is not None and "call" in parts
+        self.n_nash = [0, 0, 0, 0]  # decisions from the tables: first-in jam sets, call sets, over-call sets; and
+        #                             calls priced by call_jam because the jammer's estimated range deviated (v2)
+        self.nash_memo = (None, None)   # (hand_no, spot) cache of nash_spot
         # a BF may start only while it can still finish inside the budget (own clock, wall time like the rules)
         self.bf_start_limit = P["GUARD_NS"] - P["BF_COST_SAFETY"] * self.bf_cost_ns
         seed = config.get("seed", 0)
@@ -1685,12 +1778,13 @@ class Brain:
         """P15: the v0 decision (no ICM, no typing) for the same view. The shell calls this only when decide()
         raised, so an error in optional work costs the refinement, not the whole decision. The tracker resumes
         after the entry that failed (feed() counts an entry before processing it), so nothing is fed twice."""
-        ver, icm, rm = self.version, self.icm_on, self.rm
-        self.version, self.icm_on, self.rm = 0, False, False
+        saved = (self.version, self.icm_on, self.rm, self.nash_kind, self.nash_jam, self.nash_call_on)
+        self.version, self.icm_on, self.rm, self.nash_kind, self.nash_jam, self.nash_call_on = \
+            0, False, False, None, False, False
         try:
             return self.decide(v, t0)
         finally:
-            self.version, self.icm_on, self.rm = ver, icm, rm
+            self.version, self.icm_on, self.rm, self.nash_kind, self.nash_jam, self.nash_call_on = saved
 
     # ------------------------------------------------------------------ preflop
     def preflop(self, v):
@@ -1733,7 +1827,14 @@ class Brain:
                     all(self.is_folder(j) for j in behind):
                 return ("raise", v.min_to)                                # E09: free steal (min-raise any two)
             S = min(tot[me], max(tot[j] for j in callers)) / bb
+            nash = None
+            if self.nash_jam and not limpers and S <= P["ICM_NASH_MAX_BB"]:
+                nash = self.nash_first_in(v, cls, pp, callers, S)     # True jam / False no jam / None no table
+                if nash:
+                    return ("allin",)
             if S <= P["PF_DEPTH_BB"]:
+                if nash is not None:
+                    return ("fold",)
                 pot_w = v.pot if (v.bounty is None or "jam" not in P["BOUNTY_PARTS"]) else bounty_pot(v, v.pot)
                 S_eq = equiv_depth(S, pot_w / bb, P)                      # antes and limps = more dead money
                 J = jam_pct(S_eq, len(callers), P["JAM_FIT"]) * P["JAM_MULT"]
@@ -1756,6 +1857,10 @@ class Brain:
                 return ("check",) if v.to_call <= 0 else ("fold",)
         jam = tr.jam
         if jam is not None and in_hand[jam[0]] and v.all_in[jam[0]]:
+            if self.nash_call_on:
+                d = self.nash_call(v, jam, cls, tot)
+                if d is not None:
+                    return d
             return self.call_jam(v, jam[0], jam[1], jam[2], cls, tot, near=False)
         near = stacks[r] <= max(P["NEAR_ALLIN_BB"] * bb, P["NEAR_ALLIN_FRAC"] * tot[r])
         S = min(tot[me], tot[r]) / bb
@@ -1815,6 +1920,97 @@ class Brain:
             J = J * bfh ** P["JAM_HERO_EXP"]
             self.n_jam_hero += 1
         return J if J < 1.0 else 1.0
+
+    # ------------------------------------------------------------------ ICM_NASH (ICM_NASH notes)
+    def nash_spot(self, v):
+        """(n, stacks in bb by position SB, BB, BTN, CO, seat -> position) when the push/fold tables apply to this
+        hand (2-4 dealt in, two hole cards, no antes, blinds where the table expects them, no stack above
+        ICM_NASH_CAP_BB), else None. Cached per hand (start stacks do not change within a hand)."""
+        memo = self.nash_memo
+        if memo[0] == v.hand_no:
+            return memo[1]
+        spot = None
+        pre = self.tr.pre
+        n = len(pre)
+        if 2 <= n <= 4 and len(v.hole) == 2 and not v.ante and not self.tr.ante and \
+                pre[-2] == v.sb_seat and pre[-1] == v.bb_seat:
+            seats = (pre[-2], pre[-1]) + tuple(reversed(pre[:-2]))     # SB, BB, BTN, CO
+            bb = v.bb
+            st = tuple(v.start[s] / bb for s in seats)
+            if max(st) <= self.P["ICM_NASH_CAP_BB"] and min(st) > 0:
+                spot = (n, st, {s: i for i, s in enumerate(seats)})
+        self.nash_memo = (v.hand_no, spot)
+        return spot
+
+    def nash_first_in(self, v, cls, pp, callers, S):
+        """First-in jam from the equilibrium set at the nearest bucket: True / False, or None when no table applies.
+        v2: the typing layer's adjustments still apply on top, as a range share: typed_jam(share of the set) wider
+        than the set adds the push-order hands up to the new share; narrower (the light-jam cap vs callers) keeps
+        only the set's hands inside the cap."""
+        spot = self.nash_spot(v)
+        if spot is None:
+            return None
+        n, st, pos = spot
+        mask = _NT.lookup(n, self.nash_kind, st, ("push", pos[v.me]))
+        if mask is None:
+            return None
+        inset = bool((mask >> cls) & 1)
+        if self.version >= 2:
+            Jt = mask_pct(mask)
+            J2 = self.typed_jam(Jt, callers, S)
+            if J2 > Jt:
+                inset = inset or pp <= J2
+            elif J2 < Jt:
+                inset = inset and pp <= J2
+        self.n_nash[0] += 1
+        return inset
+
+    def nash_call(self, v, jam, cls, tot):
+        """Facing a first-in jam (no limpers, no other raise): call from the equilibrium call set, or over-call set
+        after exactly one caller; None when no table applies (call_jam then decides). v2: a jammer whose estimated
+        range deviates from its equilibrium jam range by more than ICM_NASH_CALL_DEV is priced by call_jam, anchored
+        on that equilibrium range."""
+        P = self.P
+        tr = self.tr
+        jammer = jam[0]
+        if jam[2] or tr.pf_raises != 1 or tr.limpers or tr.open_seat != jammer:
+            return None
+        me = v.me
+        if min(tot[me], tot[jammer]) / v.bb > P["ICM_NASH_MAX_BB"]:
+            return None
+        spot = self.nash_spot(v)
+        if spot is None:
+            return None
+        n, st, pos = spot
+        callers = []
+        for j in range(v.n):
+            if j == me or j == jammer or not v.in_hand[j]:
+                continue
+            if j in tr.jam_responders:
+                callers.append(j)
+            elif v.all_in[j]:
+                return None                      # a forced all-in (short blind) makes it another game
+        kind = self.nash_kind
+        if not callers:
+            node = ("call", pos[jammer], pos[me])
+        elif len(callers) == 1:
+            node = ("over", pos[jammer], pos[callers[0]], pos[me])
+        else:
+            return None
+        mask = _NT.lookup(n, kind, st, node)
+        if mask is None:
+            return None
+        if self.version >= 2 and not callers:
+            pm = _NT.lookup(n, kind, st, ("push", pos[jammer]))
+            Jn = mask_pct(pm) if pm else 0.0
+            if Jn > 0.0:
+                Je = self.jam_range_of(jammer, Jn, False)
+                dev = P["ICM_NASH_CALL_DEV"]
+                if Je > Jn * dev or Je * dev < Jn:
+                    self.n_nash[3] += 1
+                    return self.call_jam(v, jammer, Jn, False, cls, tot, near=False)
+        self.n_nash[1 if not callers else 2] += 1
+        return ("call",) if (mask >> cls) & 1 else ("fold",)
 
     def typed_jam(self, J, callers, S):
         """v2: cap light jams into callers; widen only on evidence (folder BB or a BB folding to jams; jam-tight
