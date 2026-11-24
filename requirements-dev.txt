@@ -1,0 +1,5 @@
+# The bot, the kit, the zoo and the benchmark use the Python standard library only.
+# Running the tests needs pytest:
+pytest>=8
+# bot/tools/solve_icm_pushfold.py (kept for reference; its input data is not in this repo) also needs numpy:
+# numpy>=1.26
