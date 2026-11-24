@@ -13,9 +13,9 @@ if ROOT not in sys.path:
 
 from bot import tables_loader as TL      # noqa: E402
 
-VOUT = os.path.join(ROOT, "variant", "verify", "out")
-SHORT = os.path.join(VOUT, "tables_shortdeck.py")
-TOSS90 = os.path.join(VOUT, "tables_toss.py")        # the verifier's 90 s toss build: stderr 0.024, gate must fail
+VOUT = os.path.join(ROOT, "bot", "tests", "data", "tables")   # fixtures built by variant/verify/run_builds.py
+SHORT = os.path.join(VOUT, "verify_shortdeck.py")
+TOSS90 = os.path.join(VOUT, "verify_toss.py")        # the verifier's 90 s toss build: stderr 0.024, gate must fail
 
 
 def _copy_edit(tmp_path, src, name, old, new):
@@ -110,7 +110,7 @@ def test_brain_swaps_in_good_tables_and_logs_one_line():
     assert out["seam"] and out["n"] == 81 and "warmup_ms" in out["warm"]
     assert out["jam"][0] != 3.29                      # refit fits from the shortdeck solve
     lines = [ln for ln in err.splitlines() if ln.startswith("[nolimit_bot] tables:")]
-    assert len(lines) == 1 and "tables_shortdeck.py" in lines[0]
+    assert len(lines) == 1 and "verify_shortdeck.py" in lines[0]
 
 
 def test_brain_falls_back_to_builtin_on_rejected_tables():
@@ -126,7 +126,7 @@ def test_brain_builtin_when_forced():
 
 def test_ante_tables_keep_nlhe_fits(tmp_path):
     # tables re-solved WITH antes must not replace the fits: the brain prices antes as dead money already (P11)
-    src = os.path.join(VOUT, "tables_antes.py")
+    src = os.path.join(VOUT, "verify_antes.py")
     a = TL.load(src, quiet=True)
     assert a.kind == "variant" and a.spec.ante_bb > 0 and not a.use_fits
 

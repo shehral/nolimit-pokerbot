@@ -8,7 +8,7 @@ Opponents (7 seats):
   self               7 copies of the baseline variant
   example            7 copies of the kit's example agent
 Scores are relative (our points / 12.5) with 95% CIs; the paired difference is in points and in relative units.
-Score runs use CPU-time enforcement (laptop preemption excluded; kit README section 4).
+Score runs use CPU-time enforcement (laptop preemption excluded; see sim/kit/engine.py).
 
     .venv/bin/python bot/tools/ab.py --field icm_pro --tables 2000 v0 v1 v2
     .venv/bin/python bot/tools/ab.py --field T6_like --payouts LINEAR v1 "v1:CALL_LAM=2.0"

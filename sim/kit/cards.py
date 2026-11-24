@@ -27,7 +27,7 @@ def card_int(s):
     return CARD_INT[s]
 
 
-# ---------------------------------------------------------------- evaluator tables (from sng_engine.py)
+# ---------------------------------------------------------------- evaluator tables
 STRAIGHT = [-1] * 8192
 for _m in range(8192):
     _h = -1

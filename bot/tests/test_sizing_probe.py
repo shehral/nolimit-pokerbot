@@ -2,6 +2,7 @@
 on their documented triggers (sim/zoo_fragile/bots.py)."""
 import os
 import random
+import time
 import sys
 from types import SimpleNamespace
 
@@ -80,9 +81,9 @@ class _Twin:
         br = self.bot._brain
         view = AD.normalize(state)
         br.probe = False
-        d_off = br.decide(view, 0)
+        d_off = br.decide(view, time.perf_counter_ns())      # t0 = now (0 would count the uptime)
         br.probe = True
-        d_on = br.decide(view, 0)
+        d_on = br.decide(view, time.perf_counter_ns())
         assert d_on[0] == d_off[0], (d_off, d_on)
         a_off = AD.to_action(d_off, state, B.PARAMS["ALLIN_SNAP"])
         a_on = AD.to_action(d_on, state, B.PARAMS["ALLIN_SNAP"])

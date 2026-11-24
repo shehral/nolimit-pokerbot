@@ -6,6 +6,7 @@ pre-change brain). Exact float equality is required, not a tolerance: NLHE decis
 """
 import os
 import random
+import time
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -135,7 +136,8 @@ def test_brain_bf_uses_cache_and_matches_module_function():
     br = B.Brain(0, {"n_seats": 8, "payouts": [50, 30, 20, 0, 0, 0, 0, 0], "seed": 1}, version=2,
                  params={"GUARD_NS": 10 ** 15})
     st = [2600, 2100, 1900, 1700, 1500, 1300, 1100, 900]
-    br.view_start, br.n_live, br.t0 = st, 8, 0
+    # t0 = now: a t0 of 0 would make the elapsed time the machine's uptime, which trips the guard after 11.6 days
+    br.view_start, br.n_live, br.t0 = st, 8, time.perf_counter_ns()
     br.bf_cache, br.icm_now, br.bf_budget = {}, {}, 10
     vals = [br.bf(0, j) for j in range(1, 8)]
     assert list(br.icm_now) == [0]                      # one ICM "now" per (hand, seat), reused for every opponent

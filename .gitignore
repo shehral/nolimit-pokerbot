@@ -1,4 +1,28 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Benchmark and tool outputs (published results live in results/)
+sim/bench/out/
+sim/kit/out/
+sim/zoo/out/
+sim/variants/out/
+sim/zoo_fragile/out/
+bot/out/
+variant/out/
+variant/verify/out/
+*.log
+*.tmp
+
+# Variant tables written next to the bot by drill.py or a manual build
+bot/variant_tables.py
+bot/dist/variant_tables.py
+
+# OS and editors
 .DS_Store
+.idea/
+.vscode/

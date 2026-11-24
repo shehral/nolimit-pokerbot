@@ -23,8 +23,8 @@ from bot import brain                                              # noqa: E402
 from variant.bridge import class_any, postflop_classifier, rules_from_ranking   # noqa: E402
 from variant.spec import short_deck_spec, toss_spec                # noqa: E402
 
-DRILL = os.path.join(ROOT, "bot", "out", "drill")
-TABLES = {v: os.path.join(DRILL, v, "variant_tables.py") for v in
+DRILL = os.path.join(ROOT, "bot", "tests", "data", "tables")      # fixtures built by bot/tools/drill.py
+TABLES = {v: os.path.join(DRILL, f"drill_{v}.py") for v in
           ("shortdeck", "toss", "plain", "bounty", "antes", "doubleboard")}
 
 
@@ -136,4 +136,4 @@ def test_act_cpu_latency_short_deck_strict(tmp_path):
           f"over {r['decisions']} decisions")
     assert r["exceptions"] == 0 and r["illegal"] == 0 and r["timeouts"] == 0
     assert r["cpu_us"]["p99.9"] < 250, r["cpu_us"]
-    assert "variant_tables" in r["tables_in_play"]
+    assert "drill_shortdeck.py" in r["tables_in_play"]

@@ -1,11 +1,12 @@
 # sim/kit: mock starter kit
 
-A stand-in for a tournament starter kit (the official rules list an agent template, local simulator, ICM calculator, payout
-structure, blind schedule). The real interface is unknown until the event day; bots should sit behind a thin adapter so only
-the adapter changes on the day. Pure standard library, Python 3.13 (the project `.venv`).
+A stand-in for a tournament starter kit, written from the published format only (the official rules list an agent
+template, a local simulator, an ICM calculator, a payout structure and a blind schedule). No organizer code is used.
+The real interface was to be revealed on the event day, so bots sit behind a thin adapter and only the adapter would
+change. Pure standard library (tested here on Python 3.13).
 
 ```bash
-.venv/bin/python -m pytest -q sim/kit/tests                                   # 80 tests, ~9 s
+.venv/bin/python -m pytest -q sim/kit/tests                                   # about 10 s
 .venv/bin/python -m sim.kit.runner -e 'ex=sim/kit/example_agent.py:ExampleAgent*8' -n 1000
 .venv/bin/python -m sim.kit.bench_speed                                        # throughput, writes out/speed.json
 ```
@@ -54,7 +55,7 @@ reproducible choice.
 | `n_alive`, `n_seats`, `payouts`, `time_limit_ms` | players still in; seats; points by place; the limit |
 
 **Actions.** Return `{"action": "fold" | "check" | "call" | "raise", "amount": total}`. `amount` matters only for
-`raise` and is the TOTAL street bet after raising (raise-to, not raise-by). All-in = raise to `max_raise_to`, or
+`raise` and is the TOTAL street bet after raising (raise-to semantics; raise-by is never used). All-in = raise to `max_raise_to`, or
 `call` when your stack does not cover the call. Legal means: the action is listed in `legal_actions`, and a raise
 amount is an int (or an integral float) with `min_raise_to <= amount <= max_raise_to`. Note what is listed:
 `fold` only when facing a bet, `check` only when not, `raise` only when somebody could still respond and you have
@@ -118,17 +119,17 @@ ours.stats.summary()                      # decisions, timeouts, exceptions, ill
 res.save_json("sim/bench/out/x.json")
 ```
 
-- **Entrants**: `("name", spec)`, where spec is a class/factory (picklable for workers > 1: module-level class or
-  `functools.partial`, not a lambda) or a string `"package.module:Attr"` / `"path/file.py:Attr"` (relative to the
+- Entrants: `("name", spec)`, where spec is a class/factory (picklable for workers > 1: module-level class or
+  `functools.partial`; a lambda does not pickle) or a string `"package.module:Attr"` / `"path/file.py:Attr"` (relative to the
   project root). A bare `"path/file.py"` picks `make_agent`, `AGENT`, a non-base `Agent`, or the module's single
   agent class. Copies are separate entrants with the same name; `res.by_name()` pools them.
-- **Seating**: `seating="event"` (default, the event's format): each iteration shuffles all k entrants into
+- Seating: `seating="event"` (default, the event's format): each iteration shuffles all k entrants into
   ceil(k/8) tables, empty seats get random copies marked as fillers (they play, earn nothing, are not recorded).
   `seating="sample"`: each table draws 8 distinct entrants. Agents see seat numbers only.
-- **Reproducible**: table t of seed s depends only on (s, t), so any worker count gives identical results
+- Reproducible: table t of seed s depends only on (s, t), so any worker count gives identical results
   (tested), except decisions near the time limit (wall clock) and bots whose module-level state carries over between
   tables in a worker process.
-- **PAIRED**: `run_paired({"v0": field_v0, "v1": field_v1}, n_tables, seed=1, focus=0)` replays the same tables
+- PAIRED: `run_paired({"v0": field_v0, "v1": field_v1}, n_tables, seed=1, focus=0)` replays the same tables
   (seating, buttons, decks, agent seeds) for every configuration and returns per-table paired differences of entrant
   `focus` versus the first configuration: mean diff, 95% CI, correlation, and the unpaired standard error for
   comparison. Lists must have equal length.
@@ -139,10 +140,10 @@ res.save_json("sim/bench/out/x.json")
   histogram (`stats.lat_hist`).
 - **gc_mode** (`"default"`, `"freeze"`, `"disable"`): the garbage-collector setting of each worker process (with
   `workers=1`, of this process for the run, then restored). See section 4 for why it matters.
-- **Fails fast**: bad bot paths/attributes, unpicklable specs and invalid options raise before the pool starts;
+- Fails fast: bad bot paths/attributes, unpicklable specs and invalid options raise before the pool starts;
   a worker that still fails to initialize raises from its first task (a failing pool initializer would otherwise
   make multiprocessing respawn workers forever). Driving the runner from stdin or a notebook also works.
-- **CLI**: `python -m sim.kit.runner -e 'NAME=SPEC*COPIES' ... -n TABLES --seed S --payouts TOP3 --schedule TURBO
+- CLI: `python -m sim.kit.runner -e 'NAME=SPEC*COPIES' ... -n TABLES --seed S --payouts TOP3 --schedule TURBO
   --seating event --workers W --time-limit-ms 1.0 --time-scale 1.0 --timing wall --gc-mode default --json out.json`.
 
 ## 4. Timing: read this before trusting a timeout count
@@ -151,9 +152,9 @@ Every `act()` is timed with `time.perf_counter_ns` (wall clock, what the rules l
 (the thread's CPU time). Counters: `wall_over`, `cpu_over` (the bot's own work was over the limit), and `preempted`
 (over on the wall clock only: the OS or other processes delayed it). `timing="wall"` (default, faithful to s3.7)
 enforces on wall clock; `timing="cpu"` enforces on CPU time. `time_scale=k` multiplies measured times before the
-comparison (emulates a sandbox k times slower than this Mac). `time_limit_ms=None` disables enforcement (debug).
+comparison (emulates a sandbox k times slower than the test machine). `time_limit_ms=None` disables enforcement (debug).
 
-Measured on this Mac (M4 Pro, 8 performance + 4 efficiency cores) while other jobs were running:
+Measured on the development machine (Apple M4 Pro, 8 performance + 4 efficiency cores) while other jobs were running:
 - Cheap bots (1-20 us per act) in 10-worker runs: 4-145 wall-clock timeouts per run (up to 43 per million
   decisions), act wall max up to 18 ms, and **every one** was `preempted` (CPU time never above 463 us). Single
   worker: 0-1.
@@ -183,7 +184,7 @@ Never read a laptop timeout count as a bot bug before checking `cpu_over`.
 | random x8 (all-ins end tables fast) | 15.5 | 83 | 1,116-1,248 | 8,331-9,621 |
 | mixed (example, station, passive, random, all-in, check/fold) | 151 | 808 | 165-174 | 1,056-1,384 |
 
-Two runs, load average 3.7 -> 8.9 and 4.3 -> 7.2 (an editor language server and other jobs were busy). The SPEC
+Two runs, load average 3.7 -> 8.9 and 4.3 -> 7.2 (other jobs were busy). The build
 target (>= 300 tables/s with cheap bots) is met by every field except the pathological all-calling station field,
 which sits at it (278-308). Engine cost is about 4-5 us per decision (state dict 1.3 us, the four clock reads
 0.44 us); real field bots will dominate run time once they are slower than that.
@@ -195,7 +196,7 @@ which sits at it (278-308). Engine cost is about 4-5 us per decision (state dict
 - Agents share a process with the engine and the other seats of their table: a `gc.disable()`/`gc.freeze()` in one
   bot affects every bot in that worker, and module-level state persists across tables in a worker. There is no
   sandbox: a hostile bot could read engine memory. Rehearsal only.
-- `observe` is untimed (per SPEC), so a bot could move heavy work there; the real platform may time it. Its total
+- `observe` is untimed (a design choice), so a bot could move heavy work there; the real platform may time it. Its total
   and max time are recorded per entrant (`observe.total_ms`, `observe.max_us`) so this is visible.
 - `fold` when checking is free counts as illegal here (auto-check, same outcome); a real engine might accept it.
 - Showdown reveals every contender's cards (no mucking). Moving button, no dead-button rule.

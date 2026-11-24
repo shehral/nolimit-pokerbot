@@ -1,5 +1,5 @@
 // Three-way preflop all-in tensors for the 169 starting-hand classes (Monte Carlo, with card removal), used by
-// bot/tools/solve_icm_pushfold.py for the over-call branch. The evaluator and class enumeration below are copied
+// bot/tools/solve_icm_pushfold.py for the over-call branch. The evaluator and class enumeration below match the
 // heads-up equity tool behind bot_tables.EQ_TABLE, which is not in this repo (same class order as bot_tables.EQ_LABELS).
 //   cc -O2 -o eq3_tensor bot/tools/eq3_tensor.c && ./eq3_tensor OUTDIR TRIALS_PER_TRIPLE
 // Card c in 0..51: rank c>>2 (0 = deuce .. 12 = ace), suit c&3.

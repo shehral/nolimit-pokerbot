@@ -12,8 +12,9 @@ after two callers the rest fold (no four-way all-ins; they are rarer still). Pay
 (bot/brain.py make_icm, the bot's own function) of the stacks after the hand, for the announced payout over the
 places still to be decided; players busted in the same hand are ranked by their starting stacks.
 
-EQUITIES. Heads-up: the 169 x 169 class-vs-class all-in equity and card-removal weights of
-the heads-up equity matrices behind bot_tables.EQ_TABLE (not in this repo). Three-way: a Monte Carlo tensor of
+EQUITIES. Heads-up: the 169 x 169 class-vs-class all-in equity and card-removal weights (the matrices behind
+bot_tables.EQ_TABLE), read from sim/assets/sng_icm/out/eq/. That folder is not in this repo, so this solver cannot run
+from this copy; it is kept to document how bot/icm_nash_tables.py was made. Three-way: a Monte Carlo tensor of
 finish-order probabilities for every class triple (bot/tools/eq3_tensor.c, 500 trials per unordered triple, exact
 class-level removal weights), contracted against the ranges, so the over-call branch is exact up to that noise (side
 pots resolved exactly per finish order). Removal between the hero's class and each opponent's range is exact at the

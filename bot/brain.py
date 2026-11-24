@@ -74,7 +74,7 @@ PARAMS = {
     "JAM_OPP_EXP": 2.0,           # gated jam side (every possible caller observed jam-tight): * mean BF(caller, me)**this
     "JAM_HERO_EXP_GATED": -1.5,   # ... * mean BF(me, caller) ** this (the tested formula)
     "JAM_OPP_EXP_DEFAULT": None,  # None = off (built rule); else the default (ungated) jam side also multiplies by
-                                  # mean BF(caller, me) ** this (DOCTRINE notes 2.6 (b): 1.0 = half the gated strength)
+                                  # mean BF(caller, me) ** this (DOCTRINE 2.6 (b): 1.0 = half the gated strength)
     # ---- latency
     "GUARD_NS": 200_000,          # own-clock budget per decision (ns); optional work (BFs) must fit inside it
     #                               (250,000 until the 2026-11-03 hardening: the BF start limit GUARD - 3 x cost left
@@ -179,7 +179,7 @@ PARAMS = {
     # ---- v2 typing (shrinkage: estimate = (hits + k * mean) / (n + k))
     "PRIOR": {"vol": (0.30, 12), "jam": (0.05, 10), "calljam": (0.35, 6), "post_call": (0.45, 8),
               "flop_fold": (0.30, 6), "late_open": (0.25, 8), "rejam": (0.06, 6)},
-    "CALLJAM_PRIOR": None,        # None = PRIOR["calljam"] as above; else that prior's mean (same strength) (DOCTRINE notes 2.9)
+    "CALLJAM_PRIOR": None,        # None = PRIOR["calljam"] as above; else that prior's mean (same strength) (DOCTRINE 2.9)
     "OE_PRIOR": 0.5,              # jam-call observed/expected ratio shrinkage, in expected-call units
     "MIN_OBS_TYPE": 6,            # preflop decisions before a seat gets any type other than folder ("unknown")
     "MIN_OBS_FOLDER": 8,          # preflop decisions with 0 voluntary chips before a seat is a folder
@@ -213,10 +213,10 @@ PARAMS = {
     "REJAM_LEARN": False,         # True: a re-raiser's assumed range is at least its own shrunk re-raise rate over
                                   # completed hands (RANGE_MODEL's 3-bet counters: faced one non-all-in raise, re-raised),
                                   # with no RM_CAP ceiling, so a seat that re-jams any two is priced as wide as it plays
-    "REJAM_LEARN_PRIOR": (0.06, 6),   # (mean, pseudo-opportunities) of that shrinkage (DOCTRINE notes 2.8 item 1)
+    "REJAM_LEARN_PRIOR": (0.06, 6),   # (mean, pseudo-opportunities) of that shrinkage (DOCTRINE 2.8 item 1)
     "REJAM_PRIOR_BY_LEFT": None,  # None = off; else {players left: re-jam prior} replacing REJAM_PRIOR (e.g. {2: 0.20,
-                                  # 3: 0.12}, DOCTRINE notes 2.8 item 2)
-    "BB_DEFEND_PCT_HU": None,     # None = off; else the BB defence fraction when two players are left (DOCTRINE notes 2.8 (3))
+                                  # 3: 0.12}, DOCTRINE 2.8 item 2)
+    "BB_DEFEND_PCT_HU": None,     # None = off; else the BB defence fraction when two players are left (DOCTRINE 2.8 (3))
     "REJAM_JAMZONE_BB": None,     # None = off; else first-in at PF_DEPTH_BB < S <= this: jam/fold instead of open/fold
                                   # when a seat that can call is a learned re-jammer (shrunk re-raise rate >= REJAM_T
                                   # over >= REJAM_MIN_OBS re-raise chances)
@@ -233,7 +233,7 @@ PARAMS = {
     "RESTEAL_WIDE_RATIO": 1.4,
     "PROBE_LEARN": False,         # True: a seat that bets into unbet postflop streets often (shrunk rate >= PROBE_T
                                   # over >= PROBE_MIN_OBS chances) gets the light-call treatment (LIGHT_CALL_TYPES) and
-                                  # our air calls its small flop bets (DOCTRINE notes 2.10 (1))
+                                  # our air calls its small flop bets (DOCTRINE 2.10 (1))
     "PROBE_PRIOR": (0.45, 6),
     "PROBE_T": 0.65,
     "PROBE_MIN_OBS": 4,
@@ -248,7 +248,7 @@ PARAMS = {
     "LATE_OPEN_FLOOR": 0.35,      # P6: range floor of a small late open (<= LATE_SEATS behind, raise <=
                                   #     BB_DEFEND_MAX_RAISE_BB)
     "BB_DEFEND_PCT": 0.30,        # P6: BB flats this top fraction (call order) vs a late small raise ...
-    "BB_DEFEND_PCT_HU": None,     # None = BB_DEFEND_PCT heads-up too; else the heads-up value (DOCTRINE notes 2.8 (3))
+    "BB_DEFEND_PCT_HU": None,     # None = BB_DEFEND_PCT heads-up too; else the heads-up value (DOCTRINE 2.8 (3))
     "BB_DEFEND_MAX_RAISE_BB": 3.0,  # ... of at most this many bb ...
     "BB_DEFEND_MAX_FRAC": 0.15,   # ... when the call costs at most this share of my chips
     "VALUE_FRAC_CALLER": 1.00,    # value bet vs a typed caller (E16)
@@ -1592,7 +1592,7 @@ class Brain:
                 if not (params and k in params):    # an explicit override still wins
                     P[k] = val
                     self.tuned[k] = val
-        if P["CALLJAM_PRIOR"] is not None:                # DOCTRINE notes 2.9: presumed jam-call rate of an unknown seat
+        if P["CALLJAM_PRIOR"] is not None:                # DOCTRINE 2.9: presumed jam-call rate of an unknown seat
             pr = dict(P["PRIOR"])
             pr["calljam"] = (float(P["CALLJAM_PRIOR"]), pr["calljam"][1])
             P["PRIOR"] = pr
@@ -2077,7 +2077,7 @@ class Brain:
             self.n_jam_gated += 1
         else:
             J = J * bfh ** P["JAM_HERO_EXP"]
-            if P["JAM_OPP_EXP_DEFAULT"] is not None:                  # DOCTRINE notes 2.6 (b): half-strength caller side
+            if P["JAM_OPP_EXP_DEFAULT"] is not None:                  # DOCTRINE 2.6 (b): half-strength caller side
                 J = J * self.bf_mean(me, callers, False) ** P["JAM_OPP_EXP_DEFAULT"]
             self.n_jam_hero += 1
         return J if J < 1.0 else 1.0

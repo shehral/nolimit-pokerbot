@@ -47,7 +47,7 @@ def test_bucket_is_nearest_grid_value():
 @pytest.mark.parametrize("kind", ["TOP3", "LINEAR"])
 def test_heads_up_is_chip_ev_nash(kind):
     """Two left: ICM is linear in chips for every payout, so the tables must reproduce chip-EV Nash (SB jam 58%,
-    BB call 37.3% at 10 bb; README section 6 range checks)."""
+    BB call 37.3% at 10 bb; bot design notes, range checks)."""
     push = B.mask_pct(NT.lookup(2, kind, (10, 10), ("push", 0)))
     call = B.mask_pct(NT.lookup(2, kind, (10, 10), ("call", 0, 1)))
     assert 0.55 <= push <= 0.61

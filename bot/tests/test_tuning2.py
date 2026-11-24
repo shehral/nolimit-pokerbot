@@ -91,7 +91,7 @@ def test_rejam_range_learned_and_by_players_left():
         assert abs(b.jam_range_of(5, 0.10, True) - P["REJAM_PRIOR"]) < 1e-12      # no evidence: the prior
         st = b.stats[5]
         st.rj_opp, st.rj_hit = 4, 3
-        assert abs(b.jam_range_of(5, 0.10, True) - (3 + 6 * 0.06) / 10) < 1e-12   # DOCTRINE notes 2.8: 34%
+        assert abs(b.jam_range_of(5, 0.10, True) - (3 + 6 * 0.06) / 10) < 1e-12   # DOCTRINE 2.8: 34%
         assert b.jam_range_of(5, 0.10, False) == 0.10 or rm                       # first-in jams untouched
         off = _brain({"REJAM_LEARN": False, "RANGE_MODEL": rm})
         off.n_live = 8
